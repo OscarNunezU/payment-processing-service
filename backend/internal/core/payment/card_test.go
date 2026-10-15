@@ -52,7 +52,7 @@ func TestCardNeverExposesTheNumber(t *testing.T) {
 
 	var buf bytes.Buffer
 	slog.New(slog.NewJSONHandler(&buf, nil)).Info("payment received", "card", c)
-	fmt.Fprintf(&buf, "%v %+v %s", c, c, c)
+	fmt.Fprintf(&buf, "%v %+v %s %#v", c, c, c, c)
 
 	out := buf.String()
 	if strings.Contains(out, c.Number) {

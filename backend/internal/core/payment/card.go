@@ -24,6 +24,11 @@ func (c Card) String() string {
 	return "card ****" + c.Last4()
 }
 
+// GoString covers %#v, which ignores String and would print every field.
+func (c Card) GoString() string {
+	return c.String()
+}
+
 // LogValue does the same for slog: only the last four digits reach the logs.
 func (c Card) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("last4", c.Last4()))
