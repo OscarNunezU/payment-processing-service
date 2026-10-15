@@ -19,3 +19,24 @@ type ListFilter struct {
 	Status     Status // empty means any status
 	Limit      int
 }
+
+// Acquirer authorizes a payment. The transaction id travels as the
+// idempotency key, so sending the same payment again never authorizes it twice.
+type Acquirer interface {
+	Authorize(ctx context.Context, req AuthorizationRequest) (AuthorizationResult, error)
+}
+
+type AuthorizationRequest struct {
+	TransactionID string
+	Amount        int64
+	Currency      string
+	Card          Card
+}
+
+// AuthorizationResult is the acquirer's answer. A decline is an answer, not an
+// error: errors are kept for when no answer could be obtained.
+type AuthorizationResult struct {
+	Approved          bool
+	AuthorizationCode string
+	DeclineReason     string
+}
