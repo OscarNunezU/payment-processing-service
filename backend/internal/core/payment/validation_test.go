@@ -8,7 +8,7 @@ import (
 
 func validPayment() NewPayment {
 	return NewPayment{
-		MerchantID: "panaderia-la-espiga",
+		MerchantID: "merchant-001",
 		Amount:     15000,
 		Currency:   "CLP",
 		Card:       Card{Number: "4111111111111111", ExpiryMonth: 12, ExpiryYear: 2030, CVV: "123"},

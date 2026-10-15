@@ -9,6 +9,11 @@ type Repository interface {
 	List(ctx context.Context, filter ListFilter) ([]Transaction, error)
 }
 
+// CardVault encrypts card details before they are stored.
+type CardVault interface {
+	Seal(plaintext []byte) ([]byte, error)
+}
+
 type ListFilter struct {
 	MerchantID string // empty means any merchant
 	Status     Status // empty means any status
