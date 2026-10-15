@@ -7,6 +7,8 @@ deciders: oscar
 
 # ADR 0003: Arquitectura hexagonal compacta
 
+> **Actualización 2026-10-15**: se revisó por la aparición del worker (segunda entrada al núcleo, ADR 0005) y se mantiene la versión compacta. Además, el código se agrupa en `internal/core/` e `internal/adapters/`. El detalle está al final, en "Actualización (2026-10-15)".
+
 ## Contexto
 
 El servicio tiene una entidad principal (la transacción), una entrada (HTTP) y dos salidas (Postgres y el adquirente). Es un dominio angosto pero profundo: la complejidad no está en la cantidad de entidades, sino en el comportamiento (idempotencia, estados, errores temporales y reintentos).
@@ -53,3 +55,19 @@ Pasar a la separación completa en paquetes si aparecen:
 - varios equipos trabajando en paralelo.
 
 Ese cambio es mover archivos, no reescribir lógica.
+
+## Actualización (2026-10-15)
+
+**Revisión por el worker.** El procesamiento asíncrono (ADR 0005) agrega una segunda entrada al núcleo: el worker. Es una de las señales de "Cuándo revisarla". Se revisó y se mantiene la versión compacta: el núcleo sigue siendo un solo dominio con pocos casos de uso, y el worker es un adaptador de entrada más que llama al mismo núcleo.
+
+**Agrupación en carpetas.** El código se agrupa en `internal/core/` (el núcleo) e `internal/adapters/` (entradas y salidas), para que el rol de cada paquete se vea en el árbol y sea más fácil traspasar el conocimiento al equipo. El núcleo sigue siendo un solo paquete (`payment`), sin separar dominio, casos de uso y puertos en paquetes distintos. Las reglas de dependencia no cambian.
+
+```
+internal/
+  core/
+    payment/   núcleo: dominio, casos de uso y puertos, separados por archivo
+  adapters/    entradas (api, worker) y salidas (postgres, acquirer, vault)
+  config/      configuración
+  logging/     logs
+cmd/server/    conecta las piezas
+```
