@@ -8,6 +8,10 @@ import (
 var (
 	ErrInvalidStatus = errors.New("invalid status")
 	ErrNotFound      = errors.New("payment not found")
+	// ErrNotProcessing means the payment is not PROCESSING: it was never
+	// claimed, or another worker already finished it after this one's lease
+	// expired.
+	ErrNotProcessing = errors.New("payment is not being processed")
 )
 
 type FieldError struct {

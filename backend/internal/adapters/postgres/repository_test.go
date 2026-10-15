@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -51,24 +54,47 @@ func newTransaction(merchant string, status payment.Status) payment.Transaction 
 	}
 }
 
-func TestCreateThenGet(t *testing.T) {
-	repo := testRepository(t)
-	ctx := context.Background()
-
-	created, err := repo.Create(ctx, newTransaction(uniqueMerchant(), payment.StatusPending))
+func mustCreate(t *testing.T, repo *Repository, txn payment.Transaction) payment.Transaction {
+	t.Helper()
+	created, err := repo.Create(context.Background(), txn)
 	if err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
+	return created
+}
+
+func mustClaim(t *testing.T, repo *Repository, lease time.Duration) payment.Transaction {
+	t.Helper()
+	claimed, ok, err := repo.ClaimNext(context.Background(), lease)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext() = %v, %v; want a payment", ok, err)
+	}
+	return claimed
+}
+
+// emptyQueue removes every transaction: the queue is shared by all merchants,
+// so the claim tests need it to themselves.
+func emptyQueue(t *testing.T, repo *Repository) {
+	t.Helper()
+	if _, err := repo.db.Exec(context.Background(), `TRUNCATE transactions`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+}
+
+func TestCreateThenGet(t *testing.T) {
+	repo := testRepository(t)
+
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
 	if created.ID == "" || created.CreatedAt.IsZero() || created.AvailableAt.IsZero() {
 		t.Fatalf("Create() did not fill id and timestamps: %+v", created)
 	}
 
-	got, err := repo.Get(ctx, created.ID)
+	got, err := repo.Get(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("Get() = %v", err)
 	}
 	if got.MerchantID != created.MerchantID || got.Amount != 15000 || got.Status != payment.StatusPending ||
-		string(got.CardData) != "sealed card data" || got.Attempts != 0 || got.Reason != "" {
+		string(got.CardData) != "sealed card data" || got.Attempts != 0 || got.Reason != "" || got.AuthorizationCode != "" {
 		t.Fatalf("Get() = %+v, want what was created", got)
 	}
 }
@@ -88,26 +114,23 @@ func TestListFiltersAndOrdersNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	merchant, other := uniqueMerchant(), uniqueMerchant()
 
-	first, _ := repo.Create(ctx, newTransaction(merchant, payment.StatusPending))
-	second, _ := repo.Create(ctx, newTransaction(merchant, payment.StatusApproved))
-	repo.Create(ctx, newTransaction(other, payment.StatusPending))
+	first := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+	second := mustCreate(t, repo, newTransaction(merchant, payment.StatusApproved))
+	mustCreate(t, repo, newTransaction(other, payment.StatusPending))
 
 	all, err := repo.List(ctx, payment.ListFilter{MerchantID: merchant, Limit: 50})
-	if err != nil {
-		t.Fatalf("List() = %v", err)
-	}
-	if len(all) != 2 || all[0].ID != second.ID || all[1].ID != first.ID {
-		t.Fatalf("List(merchant) = %d rows, want the 2 of the merchant, newest first", len(all))
+	if err != nil || len(all) != 2 || all[0].ID != second.ID || all[1].ID != first.ID {
+		t.Fatalf("List(merchant) = %d rows, %v; want the 2 of the merchant, newest first", len(all), err)
 	}
 
-	pending, _ := repo.List(ctx, payment.ListFilter{MerchantID: merchant, Status: payment.StatusPending, Limit: 50})
-	if len(pending) != 1 || pending[0].ID != first.ID {
-		t.Fatalf("List(merchant, PENDING) = %d rows, want 1", len(pending))
+	pending, err := repo.List(ctx, payment.ListFilter{MerchantID: merchant, Status: payment.StatusPending, Limit: 50})
+	if err != nil || len(pending) != 1 || pending[0].ID != first.ID {
+		t.Fatalf("List(merchant, PENDING) = %d rows, %v; want 1", len(pending), err)
 	}
 
-	limited, _ := repo.List(ctx, payment.ListFilter{MerchantID: merchant, Limit: 1})
-	if len(limited) != 1 {
-		t.Fatalf("List(limit 1) = %d rows, want 1", len(limited))
+	limited, err := repo.List(ctx, payment.ListFilter{MerchantID: merchant, Limit: 1})
+	if err != nil || len(limited) != 1 {
+		t.Fatalf("List(limit 1) = %d rows, %v; want 1", len(limited), err)
 	}
 }
 
@@ -116,5 +139,110 @@ func TestDatabaseRejectsAnUnknownStatus(t *testing.T) {
 
 	if _, err := repo.Create(context.Background(), newTransaction(uniqueMerchant(), "PAID")); err == nil {
 		t.Fatal("Create() accepted status PAID; the CHECK constraint should reject it")
+	}
+}
+
+func TestClaimNextTakesTheOldestWaitingPayment(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	merchant := uniqueMerchant()
+	first := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+	second := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+
+	claimed := mustClaim(t, repo, time.Minute)
+	if claimed.ID != first.ID || claimed.Status != payment.StatusProcessing || claimed.Attempts != 1 ||
+		claimed.AvailableAt.Sub(claimed.UpdatedAt) != time.Minute {
+		t.Fatalf("claimed = %+v, want the oldest payment, PROCESSING, 1 attempt and a one-minute lease", claimed)
+	}
+
+	if next := mustClaim(t, repo, time.Minute); next.ID != second.ID {
+		t.Fatalf("second claim = %s, want %s: a claimed payment must not be taken again", next.ID, second.ID)
+	}
+	if _, ok, err := repo.ClaimNext(context.Background(), time.Minute); ok || err != nil {
+		t.Fatalf("ClaimNext() on an empty queue = %v, %v; want nothing", ok, err)
+	}
+}
+
+func TestClaimNextNeverGivesTheSamePaymentToTwoWorkers(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+
+	var (
+		wg      sync.WaitGroup
+		claimed atomic.Int32
+	)
+	for range 10 {
+		wg.Go(func() {
+			if _, ok, err := repo.ClaimNext(context.Background(), time.Minute); err == nil && ok {
+				claimed.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+
+	if claimed.Load() != 1 {
+		t.Fatalf("%d workers claimed the only payment, want exactly 1", claimed.Load())
+	}
+}
+
+func TestAnExpiredLeaseLetsAnotherWorkerTakeThePayment(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+
+	mustClaim(t, repo, 0) // a worker takes it and dies: its lease ends at once
+
+	again := mustClaim(t, repo, time.Minute)
+	if again.ID != created.ID || again.Attempts != 2 {
+		t.Fatalf("second claim = %+v, want the same payment on its second attempt", again)
+	}
+}
+
+func TestFinishRecordsTheOutcomeAndWipesTheCard(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+	mustClaim(t, repo, time.Minute)
+
+	approved := payment.Outcome{Status: payment.StatusApproved, AuthorizationCode: "A1B2C3"}
+	if err := repo.Finish(ctx, created.ID, approved); err != nil {
+		t.Fatalf("Finish() = %v", err)
+	}
+	got, err := repo.Get(ctx, created.ID)
+	if err != nil || got.Status != payment.StatusApproved || got.AuthorizationCode != "A1B2C3" || got.CardData != nil {
+		t.Fatalf("after Finish = %+v, %v; want APPROVED with its code and no card data", got, err)
+	}
+
+	late := payment.Outcome{Status: payment.StatusDeclined, Reason: "card_declined"}
+	if err := repo.Finish(ctx, created.ID, late); !errors.Is(err, payment.ErrNotProcessing) {
+		t.Fatalf("second Finish() = %v, want ErrNotProcessing: a final state must not change", err)
+	}
+}
+
+func TestFinishRequiresAClaimedPayment(t *testing.T) {
+	repo := testRepository(t)
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+
+	err := repo.Finish(context.Background(), created.ID, payment.Outcome{Status: payment.StatusApproved})
+	if !errors.Is(err, payment.ErrNotProcessing) {
+		t.Fatalf("Finish() on a PENDING payment = %v, want ErrNotProcessing", err)
+	}
+}
+
+func TestFinishRejectsAStatusThatIsNotFinal(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+	mustClaim(t, repo, time.Minute)
+
+	if err := repo.Finish(ctx, created.ID, payment.Outcome{Status: payment.StatusPending}); err == nil {
+		t.Fatal("Finish() accepted PENDING as the end of a payment")
+	}
+	got, err := repo.Get(ctx, created.ID)
+	if err != nil || got.Status != payment.StatusProcessing || got.CardData == nil {
+		t.Fatalf("after a rejected Finish = %+v, %v; want it still PROCESSING with its card", got, err)
 	}
 }

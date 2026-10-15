@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // fakeRepository keeps transactions in memory, so the core can be tested
@@ -43,6 +44,34 @@ func (f *fakeRepository) List(_ context.Context, filter ListFilter) ([]Transacti
 		}
 	}
 	return list, nil
+}
+
+// ClaimNext takes the first PENDING payment; the lease is not simulated.
+func (f *fakeRepository) ClaimNext(context.Context, time.Duration) (Transaction, bool, error) {
+	for i := range f.stored {
+		if f.stored[i].Status == StatusPending {
+			f.stored[i].Status = StatusProcessing
+			f.stored[i].Attempts++
+			return f.stored[i], true, nil
+		}
+	}
+	return Transaction{}, false, nil
+}
+
+func (f *fakeRepository) Finish(_ context.Context, id string, outcome Outcome) error {
+	if !outcome.Status.IsFinal() {
+		return fmt.Errorf("finish %s: %s is not a final status", id, outcome.Status)
+	}
+	for i := range f.stored {
+		if f.stored[i].ID == id && f.stored[i].Status == StatusProcessing {
+			f.stored[i].Status = outcome.Status
+			f.stored[i].Reason = outcome.Reason
+			f.stored[i].AuthorizationCode = outcome.AuthorizationCode
+			f.stored[i].CardData = nil
+			return nil
+		}
+	}
+	return ErrNotProcessing
 }
 
 // fakeVault "seals" by reversing the bytes: enough to tell sealed data from

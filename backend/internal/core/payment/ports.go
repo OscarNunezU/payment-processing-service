@@ -1,12 +1,24 @@
 package payment
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository is what the core needs from storage.
 type Repository interface {
 	Create(ctx context.Context, txn Transaction) (Transaction, error)
 	Get(ctx context.Context, id string) (Transaction, error)
 	List(ctx context.Context, filter ListFilter) ([]Transaction, error)
+
+	// ClaimNext takes the payment that has waited the longest, marks it
+	// PROCESSING and keeps it for lease. ok is false when nothing is waiting.
+	ClaimNext(ctx context.Context, lease time.Duration) (txn Transaction, ok bool, err error)
+
+	// Finish records the final status of a claimed payment and wipes its card
+	// data. It rejects a status that is not final, and returns
+	// ErrNotProcessing if the payment is not PROCESSING.
+	Finish(ctx context.Context, id string, outcome Outcome) error
 }
 
 // CardVault encrypts card details before they are stored.
