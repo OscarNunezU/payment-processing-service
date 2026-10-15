@@ -25,6 +25,5 @@ cd backend && go run ./cmd/server
 ## Tests
 
 ```bash
-cd backend
-go test ./...
+make ci   # formato, vet y tests con -race: lo mismo que corre el CI
 ```
