@@ -79,7 +79,8 @@ func (c *Client) Authorize(ctx context.Context, req payment.AuthorizationRequest
 		return payment.AuthorizationResult{}, fmt.Errorf("call acquirer: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body) // read to the end so the connection can be reused
+		// Read what is left, up to the cap, so the connection can be reused.
+		io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
 		resp.Body.Close()
 	}()
 

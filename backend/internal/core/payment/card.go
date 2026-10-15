@@ -1,6 +1,7 @@
 package payment
 
 import (
+	"encoding/json"
 	"log/slog"
 	"time"
 )
@@ -27,6 +28,12 @@ func (c Card) String() string {
 // GoString covers %#v, which ignores String and would print every field.
 func (c Card) GoString() string {
 	return c.String()
+}
+
+// MarshalJSON keeps the card masked in JSON too. The vault and the acquirer
+// serialize the full details with their own types, never with Card.
+func (c Card) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{"last4": c.Last4()})
 }
 
 // LogValue does the same for slog: only the last four digits reach the logs.

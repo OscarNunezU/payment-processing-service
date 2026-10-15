@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -47,12 +49,35 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
-	var req createPaymentRequest
+var errTrailingData = errors.New("unexpected data after the JSON body")
+
+// decodeStrict reads exactly one JSON value from the body. Unknown fields,
+// anything after the value and a body over maxBodyBytes are all rejected.
+func decodeStrict(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "the body must be a JSON payment request")
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	switch err := dec.Decode(&struct{}{}); {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err != nil:
+		return err
+	default:
+		return errTrailingData
+	}
+}
+
+func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
+	var req createPaymentRequest
+	if err := decodeStrict(w, r, &req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "the body must be at most 1 MB")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "the body must be a single JSON payment request")
 		return
 	}
 

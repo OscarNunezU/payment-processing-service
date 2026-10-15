@@ -2,6 +2,7 @@ package payment
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -53,6 +54,11 @@ func TestCardNeverExposesTheNumber(t *testing.T) {
 	var buf bytes.Buffer
 	slog.New(slog.NewJSONHandler(&buf, nil)).Info("payment received", "card", c)
 	fmt.Fprintf(&buf, "%v %+v %s %#v", c, c, c, c)
+	asJSON, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("json.Marshal(card) = %v", err)
+	}
+	buf.Write(asJSON)
 
 	out := buf.String()
 	if strings.Contains(out, c.Number) {

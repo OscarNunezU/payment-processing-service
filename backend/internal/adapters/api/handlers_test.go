@@ -147,6 +147,10 @@ func TestCreatePaymentErrors(t *testing.T) {
 	}{
 		{"body is not json", `{"amount":`, nil, http.StatusBadRequest, "invalid_json"},
 		{"unknown field", `{"ammount":15000}`, nil, http.StatusBadRequest, "invalid_json"},
+		{"garbage after the json", validBody + ` xyz`, nil, http.StatusBadRequest, "invalid_json"},
+		{"two json values", validBody + `{}`, nil, http.StatusBadRequest, "invalid_json"},
+		{"body over 1 MB", `{"merchant_id":"` + strings.Repeat("a", 2<<20) + `"}`, nil,
+			http.StatusRequestEntityTooLarge, "body_too_large"},
 		{"malformed fields", validBody, invalid, http.StatusBadRequest, "invalid_request"},
 		{"business rule broken", validBody, fmt.Errorf("%w: 9000000 > 5000000 CLP", payment.ErrAmountExceedsMax),
 			http.StatusUnprocessableEntity, "amount_exceeds_max"},
