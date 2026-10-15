@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/api"
+	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/postgres"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/config"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/logging"
 )
@@ -41,6 +42,11 @@ func run() error {
 		return fmt.Errorf("open database pool: %w", err)
 	}
 	defer db.Close()
+
+	if err := postgres.Migrate(ctx, db); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	logger.Info("database migrated")
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-var ErrInvalidStatus = errors.New("invalid status")
+var (
+	ErrInvalidStatus = errors.New("invalid status")
+	ErrNotFound      = errors.New("payment not found")
+)
 
 type FieldError struct {
 	Field   string
