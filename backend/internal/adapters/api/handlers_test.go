@@ -18,12 +18,93 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 type fakePayments struct {
-	txn payment.Transaction
-	err error
+	txn       payment.Transaction
+	list      []payment.Transaction
+	err       error
+	gotFilter *payment.ListFilter // when set, List records the filter it received
 }
 
 func (f fakePayments) Create(context.Context, payment.NewPayment) (payment.Transaction, error) {
 	return f.txn, f.err
+}
+
+func (f fakePayments) Get(context.Context, string) (payment.Transaction, error) {
+	return f.txn, f.err
+}
+
+func (f fakePayments) List(_ context.Context, filter payment.ListFilter) ([]payment.Transaction, error) {
+	if f.gotFilter != nil {
+		*f.gotFilter = filter
+	}
+	return f.list, f.err
+}
+
+func get(payments fakePayments, target string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	router := NewRouter(NewHandler(fakePinger{}, payments))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	return rec
+}
+
+func TestGetPayment(t *testing.T) {
+	txn := payment.Transaction{ID: "txn-1", MerchantID: "merchant-001", Status: payment.StatusApproved, CardLast4: "1111"}
+
+	rec := get(fakePayments{txn: txn}, "/payments/txn-1")
+	var got paymentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || got.TransactionID != "txn-1" {
+		t.Fatalf("GET /payments/txn-1 = %d %s, want 200 with the transaction", rec.Code, rec.Body)
+	}
+
+	rec = get(fakePayments{err: payment.ErrNotFound}, "/payments/missing")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /payments/missing = %d, want 404", rec.Code)
+	}
+}
+
+func TestListPaymentsPassesTheFilters(t *testing.T) {
+	var filter payment.ListFilter
+	payments := fakePayments{
+		list:      []payment.Transaction{{ID: "txn-2"}, {ID: "txn-1"}},
+		gotFilter: &filter,
+	}
+
+	rec := get(payments, "/payments?merchant_id=merchant-001&status=APPROVED&limit=10")
+
+	var got listResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || len(got.Payments) != 2 {
+		t.Fatalf("GET /payments = %d %s, want 200 with 2 payments", rec.Code, rec.Body)
+	}
+	if filter.MerchantID != "merchant-001" || filter.Status != payment.StatusApproved || filter.Limit != 10 {
+		t.Fatalf("filter = %+v, want merchant-001, APPROVED, 10", filter)
+	}
+}
+
+func TestListPaymentsAnswersAnEmptyListAsAnArray(t *testing.T) {
+	rec := get(fakePayments{}, "/payments")
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"payments":[]`) {
+		t.Fatalf("GET /payments = %d %s, want 200 with \"payments\":[]", rec.Code, rec.Body)
+	}
+}
+
+func TestListPaymentsRejectsBadQueryParameters(t *testing.T) {
+	tests := []struct {
+		target, wantCode string
+	}{
+		{"/payments?status=PAID", "invalid_status"},
+		{"/payments?status=approved", "invalid_status"},
+		{"/payments?limit=abc", "invalid_limit"},
+		{"/payments?limit=0", "invalid_limit"},
+	}
+	for _, tt := range tests {
+		rec := get(fakePayments{}, tt.target)
+
+		var got errorResponse
+		json.Unmarshal(rec.Body.Bytes(), &got)
+		if rec.Code != http.StatusBadRequest || got.Code != tt.wantCode {
+			t.Errorf("GET %s = %d %q, want 400 %q", tt.target, rec.Code, got.Code, tt.wantCode)
+		}
+	}
 }
 
 const validBody = `{"merchant_id":"merchant-001","amount":15000,"currency":"CLP",

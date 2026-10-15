@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/core/payment"
@@ -18,6 +19,8 @@ type Pinger interface {
 // Payments is what the HTTP layer needs from the core.
 type Payments interface {
 	Create(ctx context.Context, p payment.NewPayment) (payment.Transaction, error)
+	Get(ctx context.Context, id string) (payment.Transaction, error)
+	List(ctx context.Context, filter payment.ListFilter) ([]payment.Transaction, error)
 }
 
 type Handler struct {
@@ -65,6 +68,44 @@ func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
 	)
 	w.Header().Set("Location", "/payments/"+txn.ID)
 	writeJSON(w, http.StatusAccepted, toPaymentResponse(txn))
+}
+
+func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
+	txn, err := h.payments.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toPaymentResponse(txn))
+}
+
+func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	filter := payment.ListFilter{MerchantID: query.Get("merchant_id")}
+
+	if s := query.Get("status"); s != "" {
+		status, err := payment.ParseStatus(s)
+		if err != nil {
+			writeDomainError(w, r, err)
+			return
+		}
+		filter.Status = status
+	}
+	if s := query.Get("limit"); s != "" {
+		limit, err := strconv.Atoi(s)
+		if err != nil || limit < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
+			return
+		}
+		filter.Limit = limit
+	}
+
+	txns, err := h.payments.List(r.Context(), filter)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toListResponse(txns))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

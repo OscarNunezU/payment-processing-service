@@ -23,15 +23,20 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorResponse{Code: code, Message: message})
 }
 
-// writeDomainError translates the core's errors into HTTP: ValidationError is
-// a 400 and RuleError a 422 with its code. Anything else is a 500 with a
-// generic message, so internal details never reach the client.
+// writeDomainError translates the core's errors into HTTP: ValidationError and
+// ErrInvalidStatus are a 400, ErrNotFound a 404 and RuleError a 422 with its
+// code. Anything else is a 500 with a generic message, so internal details
+// never reach the client.
 func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		invalid *payment.ValidationError
 		rule    *payment.RuleError
 	)
 	switch {
+	case errors.Is(err, payment.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "payment not found")
+	case errors.Is(err, payment.ErrInvalidStatus):
+		writeError(w, http.StatusBadRequest, "invalid_status", err.Error())
 	case errors.As(err, &invalid):
 		fields := make([]fieldError, len(invalid.Fields))
 		for i, f := range invalid.Fields {

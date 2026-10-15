@@ -48,6 +48,20 @@ type paymentResponse struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// listResponse wraps the list in an object, so pagination fields can be added
+// later without breaking clients.
+type listResponse struct {
+	Payments []paymentResponse `json:"payments"`
+}
+
+func toListResponse(txns []payment.Transaction) listResponse {
+	resp := listResponse{Payments: make([]paymentResponse, len(txns))}
+	for i, txn := range txns {
+		resp.Payments[i] = toPaymentResponse(txn)
+	}
+	return resp
+}
+
 func toPaymentResponse(txn payment.Transaction) paymentResponse {
 	return paymentResponse{
 		TransactionID: txn.ID,

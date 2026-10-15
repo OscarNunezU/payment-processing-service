@@ -22,6 +22,13 @@ curl -i -X POST localhost:8080/payments \
        "card":{"number":"4111111111111111","expiry_month":12,"expiry_year":2030,"cvv":"123"}}'
 ```
 
+Consultar un pago, o listarlos con filtros (`merchant_id`, `status` y `limit` son opcionales; por defecto 50, máximo 100):
+
+```bash
+curl -s localhost:8080/payments/<transaction_id>
+curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=PENDING&limit=10'
+```
+
 ### Desarrollo local sin Docker para la API
 
 ```bash

@@ -81,3 +81,34 @@ func TestCreateStoresNothingIfTheCardCannotBeSealed(t *testing.T) {
 		t.Fatal("a payment was stored without its card sealed")
 	}
 }
+
+func TestGetReturnsTheStoredPaymentOrNotFound(t *testing.T) {
+	repo := &fakeRepository{}
+	s := newTestService(repo, fakeVault{})
+	created, _ := s.Create(context.Background(), validPayment())
+
+	if got, err := s.Get(context.Background(), created.ID); err != nil || got.ID != created.ID {
+		t.Fatalf("Get(%s) = %+v, %v; want the stored payment", created.ID, got, err)
+	}
+	if _, err := s.Get(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListAppliesTheDefaultAndMaximumLimit(t *testing.T) {
+	tests := []struct {
+		asked, want int
+	}{
+		{0, DefaultListLimit},
+		{10, 10},
+		{500, MaxListLimit},
+	}
+	for _, tt := range tests {
+		repo := &fakeRepository{}
+		newTestService(repo, fakeVault{}).List(context.Background(), ListFilter{Limit: tt.asked})
+
+		if repo.lastFilter.Limit != tt.want {
+			t.Errorf("List(limit %d) asked the repository for %d, want %d", tt.asked, repo.lastFilter.Limit, tt.want)
+		}
+	}
+}

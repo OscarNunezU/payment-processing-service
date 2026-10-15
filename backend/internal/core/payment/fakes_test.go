@@ -10,8 +10,9 @@ import (
 // fakeRepository keeps transactions in memory, so the core can be tested
 // without a database.
 type fakeRepository struct {
-	stored []Transaction
-	err    error
+	stored     []Transaction
+	err        error
+	lastFilter ListFilter
 }
 
 func (f *fakeRepository) Create(_ context.Context, txn Transaction) (Transaction, error) {
@@ -33,6 +34,7 @@ func (f *fakeRepository) Get(_ context.Context, id string) (Transaction, error) 
 }
 
 func (f *fakeRepository) List(_ context.Context, filter ListFilter) ([]Transaction, error) {
+	f.lastFilter = filter
 	var list []Transaction
 	for _, txn := range f.stored {
 		if (filter.MerchantID == "" || txn.MerchantID == filter.MerchantID) &&

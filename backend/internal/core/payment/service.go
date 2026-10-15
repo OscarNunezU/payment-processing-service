@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 100
+)
+
 type Service struct {
 	repo   Repository
 	vault  CardVault
@@ -41,6 +46,20 @@ func (s *Service) Create(ctx context.Context, p NewPayment) (Transaction, error)
 		CardLast4:  p.Card.Last4(),
 		CardData:   sealed,
 	})
+}
+
+func (s *Service) Get(ctx context.Context, id string) (Transaction, error) {
+	return s.repo.Get(ctx, id)
+}
+
+// List returns the transactions that match the filter, newest first. Without a
+// limit it returns DefaultListLimit, and it never returns more than MaxListLimit.
+func (s *Service) List(ctx context.Context, filter ListFilter) ([]Transaction, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = DefaultListLimit
+	}
+	filter.Limit = min(filter.Limit, MaxListLimit)
+	return s.repo.List(ctx, filter)
 }
 
 // cardSecret is how a card is serialized inside the vault. It is a separate
