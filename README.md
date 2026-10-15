@@ -13,6 +13,15 @@ docker compose up --build
 curl -i localhost:8080/health   # 200 {"status":"ok"}
 ```
 
+Crear un pago (responde `202` con la transacción en `PENDING` y el header `Location`):
+
+```bash
+curl -i -X POST localhost:8080/payments \
+  -H 'Content-Type: application/json' \
+  -d '{"merchant_id":"merchant-001","amount":15000,"currency":"CLP",
+       "card":{"number":"4111111111111111","expiry_month":12,"expiry_year":2030,"cvv":"123"}}'
+```
+
 ### Desarrollo local sin Docker para la API
 
 ```bash

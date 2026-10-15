@@ -14,7 +14,9 @@ import (
 
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/api"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/postgres"
+	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/vault"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/config"
+	"github.com/OscarNunezU/payment-processing-service/backend/internal/core/payment"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/logging"
 )
 
@@ -48,9 +50,15 @@ func run() error {
 	}
 	logger.Info("database migrated")
 
+	cardVault, err := vault.New(cfg.CardEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("create card vault: %w", err)
+	}
+	payments := payment.NewService(postgres.NewRepository(db), cardVault, payment.Limits(cfg.MaxAmounts))
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.NewHandler(db)),
+		Handler:           api.NewRouter(api.NewHandler(db, payments)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

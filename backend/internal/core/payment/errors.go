@@ -15,7 +15,7 @@ type FieldError struct {
 	Message string
 }
 
-// ValidationError means the request is malformed; the API answers 400.
+// ValidationError means the request is malformed: the caller must fix the input.
 type ValidationError struct {
 	Fields []FieldError
 }
@@ -28,7 +28,7 @@ func (e *ValidationError) Error() string {
 	return "invalid payment: " + strings.Join(parts, "; ")
 }
 
-// RuleError is a business rule violation; the API answers 422 with its code.
+// RuleError means a business rule rejected the payment; Code says which one.
 type RuleError struct {
 	Code    string
 	Message string
