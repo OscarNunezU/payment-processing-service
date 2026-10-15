@@ -21,9 +21,11 @@ type Repository interface {
 	Finish(ctx context.Context, id string, outcome Outcome) error
 }
 
-// CardVault encrypts card details before they are stored.
+// CardVault encrypts card details before they are stored, and decrypts them
+// when the worker needs them for the acquirer.
 type CardVault interface {
 	Seal(plaintext []byte) ([]byte, error)
+	Open(sealed []byte) ([]byte, error)
 }
 
 type ListFilter struct {

@@ -12,7 +12,8 @@ import (
 // without a database.
 type fakeRepository struct {
 	stored     []Transaction
-	err        error
+	err        error // returned by Create
+	finishErr  error // returned by Finish
 	lastFilter ListFilter
 }
 
@@ -59,6 +60,9 @@ func (f *fakeRepository) ClaimNext(context.Context, time.Duration) (Transaction,
 }
 
 func (f *fakeRepository) Finish(_ context.Context, id string, outcome Outcome) error {
+	if f.finishErr != nil {
+		return f.finishErr
+	}
 	if !outcome.Status.IsFinal() {
 		return fmt.Errorf("finish %s: %s is not a final status", id, outcome.Status)
 	}
@@ -75,9 +79,10 @@ func (f *fakeRepository) Finish(_ context.Context, id string, outcome Outcome) e
 }
 
 // fakeVault "seals" by reversing the bytes: enough to tell sealed data from
-// plaintext, and easy to undo in a test.
+// plaintext, and easy to undo.
 type fakeVault struct {
-	err error
+	err     error // returned by Seal
+	openErr error // returned by Open
 }
 
 func (f fakeVault) Seal(plaintext []byte) ([]byte, error) {
@@ -87,4 +92,25 @@ func (f fakeVault) Seal(plaintext []byte) ([]byte, error) {
 	sealed := bytes.Clone(plaintext)
 	slices.Reverse(sealed)
 	return sealed, nil
+}
+
+func (f fakeVault) Open(sealed []byte) ([]byte, error) {
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	plain := bytes.Clone(sealed)
+	slices.Reverse(plain)
+	return plain, nil
+}
+
+// fakeAcquirer answers with a fixed result and records what it was asked.
+type fakeAcquirer struct {
+	result AuthorizationResult
+	err    error
+	calls  []AuthorizationRequest
+}
+
+func (f *fakeAcquirer) Authorize(_ context.Context, req AuthorizationRequest) (AuthorizationResult, error) {
+	f.calls = append(f.calls, req)
+	return f.result, f.err
 }
