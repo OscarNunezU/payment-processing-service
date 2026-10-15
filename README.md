@@ -25,8 +25,11 @@ cd backend && go run ./cmd/server
 ## Tests
 
 ```bash
-make ci   # formato, vet y tests con -race: lo mismo que corre el CI
+make ci                 # formato, vet y tests con -race; sin Docker (los de Postgres se saltan)
+make test-integration   # todos los tests, incluidos los de Postgres (levanta el Postgres de compose)
 ```
+
+El CI corre los dos: levanta un Postgres como servicio, así que ningún test se salta.
 
 ## Decisiones
 
@@ -37,3 +40,4 @@ make ci   # formato, vet y tests con -race: lo mismo que corre el CI
 | [0003](docs/decisions/0003-arquitectura-hexagonal-compacta.md) | Arquitectura hexagonal compacta |
 | [0004](docs/decisions/0004-montos-en-enteros.md) | Montos como enteros en la unidad mínima de la moneda |
 | [0005](docs/decisions/0005-procesamiento-asincrono.md) | Procesamiento asíncrono con Postgres como cola |
+| [0006](docs/decisions/0006-estrategia-de-tests.md) | Tests con la librería estándar y Postgres real |
