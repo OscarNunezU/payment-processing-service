@@ -27,3 +27,12 @@ cd backend && go run ./cmd/server
 ```bash
 make ci   # formato, vet y tests con -race: lo mismo que corre el CI
 ```
+
+## Decisiones
+
+| ADR | Decisión |
+|---|---|
+| [0001](docs/decisions/0001-net-http-sin-framework.md) | `net/http` de la librería estándar, sin framework |
+| [0002](docs/decisions/0002-go-1.26.md) | Go 1.26.9, fijado en `go.mod` |
+| [0003](docs/decisions/0003-arquitectura-hexagonal-compacta.md) | Arquitectura hexagonal compacta |
+| [0004](docs/decisions/0004-montos-en-enteros.md) | Montos como enteros en la unidad mínima de la moneda |
