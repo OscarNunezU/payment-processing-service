@@ -36,3 +36,4 @@ make ci   # formato, vet y tests con -race: lo mismo que corre el CI
 | [0002](docs/decisions/0002-go-1.26.md) | Go 1.26.9, fijado en `go.mod` |
 | [0003](docs/decisions/0003-arquitectura-hexagonal-compacta.md) | Arquitectura hexagonal compacta |
 | [0004](docs/decisions/0004-montos-en-enteros.md) | Montos como enteros en la unidad mínima de la moneda |
+| [0005](docs/decisions/0005-procesamiento-asincrono.md) | Procesamiento asíncrono con Postgres como cola |
