@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/OscarNunezU/payment-processing-service/backend/internal/api"
+	"github.com/OscarNunezU/payment-processing-service/backend/internal/adapters/api"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/config"
 	"github.com/OscarNunezU/payment-processing-service/backend/internal/logging"
 )
