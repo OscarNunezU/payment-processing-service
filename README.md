@@ -30,6 +30,12 @@ curl -s localhost:8080/payments/<transaction_id>
 curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=APPROVED&limit=10'
 ```
 
+Cada cambio del pago queda en su historia, con el intento y el motivo:
+
+```bash
+curl -s localhost:8080/payments/<transaction_id>/events
+```
+
 ### Idempotencia
 
 Cada `POST /payments` lleva el header `Idempotency-Key`, elegido por el comercio (por ejemplo, el id de su orden). Una clave identifica un solo pago por comercio:

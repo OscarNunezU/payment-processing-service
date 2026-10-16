@@ -74,6 +74,15 @@ func (s *Service) Get(ctx context.Context, id string) (Transaction, error) {
 	return s.repo.Get(ctx, id)
 }
 
+// Events returns the payment's history, oldest first, or ErrNotFound if the
+// payment does not exist. A payment from before the history was kept has none.
+func (s *Service) Events(ctx context.Context, id string) ([]Event, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return nil, err
+	}
+	return s.repo.Events(ctx, id)
+}
+
 // List returns the transactions that match the filter, newest first. Without a
 // limit it returns DefaultListLimit, and it never returns more than MaxListLimit.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]Transaction, error) {
