@@ -23,29 +23,51 @@ func NewService(repo Repository, vault CardVault, limits Limits) *Service {
 	return &Service{repo: repo, vault: vault, limits: limits, now: time.Now}
 }
 
-// Create validates the payment, applies the business rules and stores it as
-// PENDING with the card sealed. The acquirer is called later, by the worker.
-func (s *Service) Create(ctx context.Context, p NewPayment) (Transaction, error) {
+// Create stores the payment as PENDING with the card sealed, once per
+// idempotency key: a retry gets the same payment back and the bool reports it
+// was replayed; a different payment with a used key gets
+// ErrIdempotencyKeyReused. The acquirer is called later, by the worker.
+func (s *Service) Create(ctx context.Context, p NewPayment) (Transaction, bool, error) {
 	if err := p.Validate(); err != nil {
-		return Transaction{}, err
+		return Transaction{}, false, err
 	}
-	if err := CheckRules(p, s.limits, s.now()); err != nil {
-		return Transaction{}, err
-	}
+	fp := fingerprint(p)
 
+	if ruleErr := CheckRules(p, s.limits, s.now()); ruleErr != nil {
+		// A retry of a payment already accepted still gets it back, even if a
+		// limit changed or the card expired in between.
+		existing, found, err := s.repo.FindByIdempotencyKey(ctx, p.MerchantID, p.IdempotencyKey)
+		if err != nil {
+			return Transaction{}, false, err
+		}
+		if !found {
+			return Transaction{}, false, ruleErr
+		}
+		return replay(existing, fp)
+	}
 	sealed, err := s.sealCard(p.Card)
 	if err != nil {
-		return Transaction{}, err
+		return Transaction{}, false, err
 	}
 
-	return s.repo.Create(ctx, Transaction{
-		MerchantID: p.MerchantID,
-		Amount:     p.Amount,
-		Currency:   p.Currency,
-		Status:     StatusPending,
-		CardLast4:  p.Card.Last4(),
-		CardData:   sealed,
+	stored, created, err := s.repo.Create(ctx, Transaction{
+		MerchantID:         p.MerchantID,
+		IdempotencyKey:     p.IdempotencyKey,
+		RequestFingerprint: fp,
+		Amount:             p.Amount,
+		Currency:           p.Currency,
+		Status:             StatusPending,
+		CardLast4:          p.Card.Last4(),
+		CardData:           sealed,
 	})
+	if err != nil {
+		return Transaction{}, false, err
+	}
+	if !created {
+		return replay(stored, fp)
+	}
+	stored.CardData = nil
+	return stored, false, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Transaction, error) {

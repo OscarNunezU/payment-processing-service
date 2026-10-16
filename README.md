@@ -18,6 +18,7 @@ Crear un pago (responde `202` con la transacción en `PENDING` y el header `Loca
 ```bash
 curl -i -X POST localhost:8080/payments \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-1001' \
   -d '{"merchant_id":"merchant-001","amount":15000,"currency":"CLP",
        "card":{"number":"4111111111111111","expiry_month":12,"expiry_year":2030,"cvv":"123"}}'
 ```
@@ -28,6 +29,19 @@ Un worker toma el pago en segundo plano, lo autoriza con el adquirente simulado 
 curl -s localhost:8080/payments/<transaction_id>
 curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=APPROVED&limit=10'
 ```
+
+### Idempotencia
+
+Cada `POST /payments` lleva el header `Idempotency-Key`, elegido por el comercio (por ejemplo, el id de su orden). Una clave identifica un solo pago por comercio:
+
+| Request | Respuesta |
+|---|---|
+| clave nueva | `202`: se crea el pago |
+| la misma clave y el mismo pago (un reintento) | `202` con el mismo pago en su estado actual y el header `Idempotent-Replayed: true` |
+| la misma clave con otro pago | `422 idempotency_key_reused` |
+| sin clave | `400` |
+
+Reintentar con la misma clave devuelve el mismo resultado, aunque sea `FAILED`; para un intento nuevo se usa una clave nueva. Una request rechazada (`400` o `422`) no guarda nada, así que se puede corregir y reenviar con la misma clave. Detalle en la [ADR 0007](docs/decisions/0007-idempotencia-por-comercio.md).
 
 ### Tarjetas de prueba
 

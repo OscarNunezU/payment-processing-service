@@ -19,6 +19,15 @@ type fieldError struct {
 	Message string `json:"message"`
 }
 
+// wireName names a field the way the merchant sent it: the idempotency key
+// arrives as a header, not in the JSON body.
+func wireName(field string) string {
+	if field == "idempotency_key" {
+		return idempotencyKeyHeader
+	}
+	return field
+}
+
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorResponse{Code: code, Message: message})
 }
@@ -40,7 +49,7 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &invalid):
 		fields := make([]fieldError, len(invalid.Fields))
 		for i, f := range invalid.Fields {
-			fields[i] = fieldError{Field: f.Field, Message: f.Message}
+			fields[i] = fieldError{Field: wireName(f.Field), Message: f.Message}
 		}
 		writeJSON(w, http.StatusBadRequest, errorResponse{
 			Code:    "invalid_request",

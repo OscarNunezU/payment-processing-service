@@ -11,7 +11,7 @@ import (
 func waitingPayment(t *testing.T) *fakeRepository {
 	t.Helper()
 	repo := &fakeRepository{}
-	if _, err := newTestService(repo, fakeVault{}).Create(context.Background(), validPayment()); err != nil {
+	if _, _, err := newTestService(repo, fakeVault{}).Create(context.Background(), validPayment()); err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
 	return repo

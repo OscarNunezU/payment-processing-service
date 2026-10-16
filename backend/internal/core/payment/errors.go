@@ -47,4 +47,8 @@ var (
 	ErrAmountExceedsMax     = &RuleError{Code: "amount_exceeds_max", Message: "amount exceeds the maximum allowed"}
 	ErrInvalidCardNumber    = &RuleError{Code: "invalid_card_number", Message: "card number is not valid"}
 	ErrCardExpired          = &RuleError{Code: "card_expired", Message: "card is expired"}
+	ErrIdempotencyKeyReused = &RuleError{
+		Code:    "idempotency_key_reused",
+		Message: "the idempotency key was already used for a different payment",
+	}
 )

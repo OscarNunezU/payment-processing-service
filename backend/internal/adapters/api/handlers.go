@@ -20,7 +20,7 @@ type Pinger interface {
 
 // Payments is what the HTTP layer needs from the core.
 type Payments interface {
-	Create(ctx context.Context, p payment.NewPayment) (payment.Transaction, error)
+	Create(ctx context.Context, p payment.NewPayment) (txn payment.Transaction, replayed bool, err error)
 	Get(ctx context.Context, id string) (payment.Transaction, error)
 	List(ctx context.Context, filter payment.ListFilter) ([]payment.Transaction, error)
 }
@@ -36,6 +36,8 @@ func NewHandler(db Pinger, payments Payments) *Handler {
 
 // maxBodyBytes caps the request body: a payment request is a few hundred bytes.
 const maxBodyBytes = 1 << 20
+
+const idempotencyKeyHeader = "Idempotency-Key"
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -81,15 +83,24 @@ func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txn, err := h.payments.Create(r.Context(), req.toNewPayment())
+	newPayment := req.toNewPayment()
+	newPayment.IdempotencyKey = r.Header.Get(idempotencyKeyHeader)
+
+	txn, replayed, err := h.payments.Create(r.Context(), newPayment)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	logging.FromContext(r.Context()).Info("payment accepted",
+	msg := "payment accepted"
+	if replayed {
+		msg = "payment replayed"
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	logging.FromContext(r.Context()).Info(msg,
 		"transaction_id", txn.ID,
 		"merchant_id", txn.MerchantID,
+		"status", txn.Status,
 	)
 	w.Header().Set("Location", "/payments/"+txn.ID)
 	writeJSON(w, http.StatusAccepted, toPaymentResponse(txn))
