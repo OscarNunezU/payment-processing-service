@@ -261,6 +261,7 @@ Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el 
 - El front es una consola interna, sin login: muestra los pagos de todos los comercios, como `GET /payments`.
 - Hay un solo adquirente. Responde por HTTP y JSON, y es idempotente por `Idempotency-Key`, como el simulado.
 - La tarjeta se guarda cifrada solo mientras espera al worker. Un sistema real delegaría los datos de tarjeta en un servicio certificado PCI DSS, con tokenización.
+- Una tarjeta vence cuando su mes terminó en todas partes, es decir, en UTC−12: el servicio no rechaza una tarjeta que siga vigente para su titular, y en el borde decide el emisor.
 - Los valores de resiliencia (3 intentos con base de 2 s, un breaker de 5 fallas por 30 s y el vencimiento a los 2 minutos) son supuestos razonados en las ADR 0009 y 0010. Se ajustarían con datos reales del adquirente y del tráfico.
 
 ## Limitaciones y evolución

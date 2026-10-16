@@ -59,9 +59,15 @@ func (c Card) luhnValid() bool {
 	return sum%10 == 0
 }
 
-// expired reports whether the card is past its expiry month; a card is valid
-// until the last day of that month.
+// anywhereOnEarth is UTC-12, the last time zone where a day ends.
+var anywhereOnEarth = time.FixedZone("UTC-12", -12*60*60)
+
+// expired reports whether the card is past its expiry month. A card is valid
+// until the last day of that month wherever its holder is, so the month must
+// have ended everywhere: no valid card is turned down, and at the edge the
+// issuer has the last word.
 func (c Card) expired(now time.Time) bool {
+	now = now.In(anywhereOnEarth)
 	year, month := now.Year(), int(now.Month())
 	return c.ExpiryYear < year || (c.ExpiryYear == year && c.ExpiryMonth < month)
 }
