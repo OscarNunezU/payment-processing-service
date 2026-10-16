@@ -28,6 +28,26 @@ func TestLuhnValid(t *testing.T) {
 	}
 }
 
+func TestAMonthEndsWhenItHasEndedEverywhere(t *testing.T) {
+	card := Card{ExpiryMonth: 10, ExpiryYear: 2026}
+	tests := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"oct 31, 22:00 in santiago (utc-3)", time.Date(2026, time.November, 1, 1, 0, 0, 0, time.UTC), false},
+		{"oct 31, 23:59 in utc-12", time.Date(2026, time.November, 1, 11, 59, 0, 0, time.UTC), false},
+		{"nov 1 everywhere", time.Date(2026, time.November, 1, 12, 0, 0, 0, time.UTC), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := card.expired(tt.now); got != tt.want {
+				t.Errorf("expired(10/2026) at %s = %v, want %v", tt.now.Format(time.RFC3339), got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExpired(t *testing.T) {
 	now := time.Date(2026, time.October, 15, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

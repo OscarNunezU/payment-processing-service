@@ -65,6 +65,16 @@ func TestAuthorizeFailsWhenNoAnswerCanBeObtained(t *testing.T) {
 		{"response is not json", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`not json`))
 		}},
+		// A 200 that does not say what was decided must not become a decline.
+		{"answer without a decision", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"error":"maintenance"}`))
+		}},
+		{"approval without a code", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"approved":true}`))
+		}},
+		{"decline without a reason", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"approved":false}`))
+		}},
 		{"acquirer too slow", func(w http.ResponseWriter, r *http.Request) {
 			// Reading the body lets the server notice when the client hangs up.
 			io.Copy(io.Discard, r.Body)
