@@ -16,6 +16,13 @@ import (
 // Processor is what the worker needs from the core.
 type Processor interface {
 	ProcessNext(ctx context.Context) (payment.Transaction, bool, error)
+	ExpirePending(ctx context.Context) (int, error)
+}
+
+// Gate tells the worker to hold off taking payments, as the acquirer's circuit
+// breaker does while the acquirer keeps failing.
+type Gate interface {
+	Wait() time.Duration
 }
 
 // ProcessTimeout is the most a single payment may take. It sits between the
@@ -26,6 +33,9 @@ const ProcessTimeout = 15 * time.Second
 // maxPause caps the back-off while claims keep failing, so the worker notices
 // within seconds when the database is back.
 const maxPause = 10 * time.Second
+
+// expireEvery is how often the worker fails the payments that waited too long.
+const expireEvery = 30 * time.Second
 
 // step is what a worker goroutine does after one turn.
 type step int
@@ -38,17 +48,21 @@ const (
 
 type Worker struct {
 	processor      Processor
+	gate           Gate
 	concurrency    int
 	idle           time.Duration // pause when the queue is empty or the claim failed
 	processTimeout time.Duration
+	expireEvery    time.Duration
 }
 
-func New(processor Processor, concurrency int) *Worker {
+func New(processor Processor, gate Gate, concurrency int) *Worker {
 	return &Worker{
 		processor:      processor,
+		gate:           gate,
 		concurrency:    concurrency,
 		idle:           500 * time.Millisecond,
 		processTimeout: ProcessTimeout,
+		expireEvery:    expireEvery,
 	}
 }
 
@@ -59,12 +73,19 @@ func (w *Worker) Run(ctx context.Context) {
 	for range w.concurrency {
 		wg.Go(func() { w.loop(ctx, logger) })
 	}
+	wg.Go(func() { w.expire(ctx, logger) })
 	wg.Wait()
 }
 
 func (w *Worker) loop(ctx context.Context, logger *slog.Logger) {
 	pause := w.idle
 	for ctx.Err() == nil {
+		if wait := w.gate.Wait(); wait > 0 {
+			// The acquirer keeps failing: payments wait in the queue, without
+			// spending attempts, until the circuit closes.
+			sleep(ctx, wait)
+			continue
+		}
 		switch w.processOne(ctx, logger) {
 		case stepProcessed:
 			pause = w.idle
@@ -74,10 +95,36 @@ func (w *Worker) loop(ctx context.Context, logger *slog.Logger) {
 		case stepClaimFailed:
 			pause = min(pause*2, maxPause)
 		}
+		sleep(ctx, pause)
+	}
+}
+
+// expire fails, every expireEvery, the payments that waited too long without
+// being sent. Every replica runs it, which is safe: a payment expires once.
+func (w *Worker) expire(ctx context.Context, logger *slog.Logger) {
+	ticker := time.NewTicker(w.expireEvery)
+	defer ticker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-		case <-time.After(pause):
+			return
+		case <-ticker.C:
 		}
+		n, err := w.processor.ExpirePending(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.Error("could not expire waiting payments", "error", err)
+		case n > 0:
+			logger.Warn("payments expired without being sent to the acquirer", "count", n)
+		}
+	}
+}
+
+// sleep waits for d, or less if ctx ends first.
+func sleep(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
 	}
 }
 

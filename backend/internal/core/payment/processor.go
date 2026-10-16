@@ -21,6 +21,12 @@ const (
 	DefaultRetryBaseDelay = 2 * time.Second
 )
 
+// DefaultPendingTTL is how long a payment may wait without ever being sent to
+// the acquirer. Past it, authorizing it would surprise a customer who has most
+// likely given up, so it fails as expired instead. The queue must stay well
+// below it even at peak, or a busy hour would expire payments too.
+const DefaultPendingTTL = 2 * time.Minute
+
 // Reasons the service itself gives when it ends a payment as FAILED, or when
 // an attempt fails and is retried. Decline reasons, instead, come from the
 // acquirer.
@@ -28,6 +34,7 @@ const (
 	ReasonCardUnreadable      = "card_unreadable"
 	ReasonAcquirerRejected    = "acquirer_rejected"
 	ReasonAcquirerUnavailable = "acquirer_unavailable"
+	ReasonExpired             = "expired"
 )
 
 // errNoAnswer marks an attempt the acquirer gave no answer to: a temporary
@@ -44,6 +51,7 @@ type Processor struct {
 	lease       time.Duration
 	maxAttempts int
 	retryBase   time.Duration
+	pendingTTL  time.Duration
 }
 
 func NewProcessor(repo Repository, vault CardVault, acquirer Acquirer) *Processor {
@@ -54,6 +62,7 @@ func NewProcessor(repo Repository, vault CardVault, acquirer Acquirer) *Processo
 		lease:       DefaultLease,
 		maxAttempts: DefaultMaxAttempts,
 		retryBase:   DefaultRetryBaseDelay,
+		pendingTTL:  DefaultPendingTTL,
 	}
 }
 
@@ -98,6 +107,14 @@ func (p *Processor) ProcessNext(ctx context.Context) (txn Transaction, processed
 
 	txn.Status, txn.Reason, txn.AuthorizationCode = outcome.Status, outcome.Reason, outcome.AuthorizationCode
 	return txn, true, nil
+}
+
+// ExpirePending fails the payments that waited longer than the TTL without
+// ever being sent to the acquirer, and returns how many. A payment already
+// sent never expires: the acquirer may have approved it, so the attempts limit
+// ends it instead.
+func (p *Processor) ExpirePending(ctx context.Context) (int, error) {
+	return p.repo.ExpirePending(ctx, p.pendingTTL)
 }
 
 // authorize turns the acquirer's answer, or the lack of one, into an outcome.

@@ -33,8 +33,12 @@ type Repository interface {
 	// failed. It returns ErrNotProcessing if the payment is not PROCESSING.
 	Retry(ctx context.Context, id, reason string, delay time.Duration) error
 
-	// Events returns the payment's history, oldest first. Create, ClaimNext,
-	// Retry and Finish record an event in the same write as each change, so
+	// ExpirePending fails with ReasonExpired the payments still PENDING after
+	// olderThan, wipes their card and returns how many.
+	ExpirePending(ctx context.Context, olderThan time.Duration) (int, error)
+
+	// Events returns the payment's history, oldest first. Every method that
+	// changes a payment records an event in the same write as the change, so
 	// the history never misses one.
 	Events(ctx context.Context, transactionID string) ([]Event, error)
 }

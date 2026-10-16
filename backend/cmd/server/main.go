@@ -64,12 +64,16 @@ func run() error {
 	}
 	repo := postgres.NewRepository(db)
 	payments := payment.NewService(repo, cardVault, payment.Limits(cfg.MaxAmounts))
-	processor := payment.NewProcessor(repo, cardVault, acquirer.NewClient(cfg.AcquirerURL, cfg.AcquirerTimeout))
+	// The breaker wraps the acquirer for the processor and, as the worker's
+	// gate, stops the worker from taking payments while it is open.
+	breaker := acquirer.NewBreaker(acquirer.NewClient(cfg.AcquirerURL, cfg.AcquirerTimeout),
+		acquirer.DefaultFailureThreshold, acquirer.DefaultCooldown)
+	processor := payment.NewProcessor(repo, cardVault, breaker)
 
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		worker.New(processor, cfg.WorkerConcurrency).Run(ctx)
+		worker.New(processor, breaker, cfg.WorkerConcurrency).Run(ctx)
 	}()
 	logger.Info("worker started", "concurrency", cfg.WorkerConcurrency, "acquirer", cfg.AcquirerURL)
 
