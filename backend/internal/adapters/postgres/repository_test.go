@@ -424,3 +424,41 @@ func TestARetryIsRecordedAndTheNextAttemptCounts(t *testing.T) {
 		}
 	}
 }
+
+func TestExpirePendingFailsOnlyPaymentsNeverSent(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	merchant := uniqueMerchant()
+	sent := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+	mustClaim(t, repo, time.Minute) // a worker took it, so it reached the acquirer
+	neverSent := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+	recent := mustCreate(t, repo, newTransaction(merchant, payment.StatusPending))
+	_, err := repo.db.Exec(ctx, `UPDATE transactions SET created_at = now() - interval '1 hour' WHERE id = ANY($1)`,
+		[]string{sent.ID, neverSent.ID})
+	if err != nil {
+		t.Fatalf("age the payments: %v", err)
+	}
+
+	expired, err := repo.ExpirePending(ctx, payment.DefaultPendingTTL)
+	if err != nil || expired != 1 {
+		t.Fatalf("ExpirePending() = %d, %v; want only the old payment that was never sent", expired, err)
+	}
+	want := map[string]payment.Status{
+		sent.ID:      payment.StatusProcessing,
+		neverSent.ID: payment.StatusFailed,
+		recent.ID:    payment.StatusPending,
+	}
+	for id, status := range want {
+		if got, err := repo.Get(ctx, id); err != nil || got.Status != status {
+			t.Errorf("payment %s = %s, %v; want %s", id, got.Status, err, status)
+		}
+	}
+	got, _ := repo.Get(ctx, neverSent.ID)
+	events, err := repo.Events(ctx, neverSent.ID)
+	if got.Reason != payment.ReasonExpired || got.CardData != nil || err != nil || len(events) != 2 ||
+		events[1].Status != payment.StatusFailed || events[1].Reason != payment.ReasonExpired {
+		t.Fatalf("expired payment = %q with card %v, events %+v; want reason expired, no card and its FAILED event",
+			got.Reason, got.CardData != nil, events)
+	}
+}

@@ -198,3 +198,13 @@ func TestRetryDelayDoublesAndHalfOfItIsRandom(t *testing.T) {
 		}
 	}
 }
+
+func TestExpirePendingUsesTheTTL(t *testing.T) {
+	repo := &fakeRepository{}
+	if _, err := NewProcessor(repo, fakeVault{}, &fakeAcquirer{}).ExpirePending(context.Background()); err != nil {
+		t.Fatalf("ExpirePending() = %v", err)
+	}
+	if repo.expiredTTL != DefaultPendingTTL {
+		t.Fatalf("expired payments older than %v, want %v", repo.expiredTTL, DefaultPendingTTL)
+	}
+}

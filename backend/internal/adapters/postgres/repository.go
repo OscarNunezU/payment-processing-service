@@ -219,6 +219,27 @@ func (r *Repository) Retry(ctx context.Context, id, reason string, delay time.Du
 	return nil
 }
 
+// ExpirePending only touches PENDING payments: never claimed, so never sent.
+// A worker claiming one at the same moment wins or loses cleanly, because both
+// statements lock the row and check its status.
+func (r *Repository) ExpirePending(ctx context.Context, olderThan time.Duration) (int, error) {
+	var expired int
+	err := r.db.QueryRow(ctx, `
+		WITH changed AS (
+			UPDATE transactions
+			SET status = 'FAILED',
+			    reason = $2,
+			    card_data = NULL,
+			    updated_at = now()
+			WHERE status = 'PENDING' AND created_at < now() - make_interval(secs => $1)
+			RETURNING *
+		), `+recordEvent("reason")+`
+		SELECT count(*) FROM changed`,
+		olderThan.Seconds(), payment.ReasonExpired,
+	).Scan(&expired)
+	return expired, err
+}
+
 func (r *Repository) Events(ctx context.Context, transactionID string) ([]payment.Event, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT status, attempt, COALESCE(reason, ''), created_at

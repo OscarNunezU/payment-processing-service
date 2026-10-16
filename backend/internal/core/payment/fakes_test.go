@@ -12,12 +12,13 @@ import (
 // without a database.
 type fakeRepository struct {
 	stored     []Transaction
-	err        error   // returned by Create
-	finishErr  error   // returned by Finish
-	retryErr   error   // returned by Retry
-	findErr    error   // returned by FindByIdempotencyKey
-	events     []Event // returned by Events, whatever the payment
-	retries    []retry // what Retry was asked
+	err        error         // returned by Create
+	finishErr  error         // returned by Finish
+	retryErr   error         // returned by Retry
+	findErr    error         // returned by FindByIdempotencyKey
+	events     []Event       // returned by Events, whatever the payment
+	retries    []retry       // what Retry was asked
+	expiredTTL time.Duration // what ExpirePending was asked
 	lastFilter ListFilter
 }
 
@@ -117,6 +118,11 @@ func (f *fakeRepository) Retry(_ context.Context, id, reason string, delay time.
 		}
 	}
 	return ErrNotProcessing
+}
+
+func (f *fakeRepository) ExpirePending(_ context.Context, olderThan time.Duration) (int, error) {
+	f.expiredTTL = olderThan
+	return 0, nil
 }
 
 func (f *fakeRepository) Events(context.Context, string) ([]Event, error) {
