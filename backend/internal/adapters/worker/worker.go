@@ -98,6 +98,9 @@ func (w *Worker) processOne(ctx context.Context, logger *slog.Logger) step {
 		return stepIdle
 	case errors.Is(err, payment.ErrNotProcessing):
 		logger.Warn("payment already finished by another worker", "transaction_id", txn.ID)
+	case errors.Is(err, payment.ErrRetryScheduled):
+		logger.Warn("payment attempt got no answer; it will be retried",
+			"transaction_id", txn.ID, "attempt", txn.Attempts, "error", err)
 	case err != nil:
 		logger.Error("payment not finished; it will be taken again when its lease expires",
 			"transaction_id", txn.ID, "error", err)

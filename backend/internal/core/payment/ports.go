@@ -28,9 +28,14 @@ type Repository interface {
 	// ErrNotProcessing if the payment is not PROCESSING.
 	Finish(ctx context.Context, id string, outcome Outcome) error
 
-	// Events returns the payment's history, oldest first. Create, ClaimNext
-	// and Finish record an event in the same write as each change, so the
-	// history never misses one.
+	// Retry gives a claimed payment another attempt after delay: it stays
+	// PROCESSING, with its card, and its event records why the attempt
+	// failed. It returns ErrNotProcessing if the payment is not PROCESSING.
+	Retry(ctx context.Context, id, reason string, delay time.Duration) error
+
+	// Events returns the payment's history, oldest first. Create, ClaimNext,
+	// Retry and Finish record an event in the same write as each change, so
+	// the history never misses one.
 	Events(ctx context.Context, transactionID string) ([]Event, error)
 }
 

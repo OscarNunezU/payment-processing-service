@@ -85,6 +85,9 @@ func (c *Client) Authorize(ctx context.Context, req payment.AuthorizationRequest
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		if refused(resp.StatusCode) {
+			return payment.AuthorizationResult{}, fmt.Errorf("%w (status %d)", payment.ErrAcquirerRejected, resp.StatusCode)
+		}
 		return payment.AuthorizationResult{}, fmt.Errorf("acquirer answered %d", resp.StatusCode)
 	}
 
@@ -97,4 +100,12 @@ func (c *Client) Authorize(ctx context.Context, req payment.AuthorizationRequest
 		AuthorizationCode: out.AuthorizationCode,
 		DeclineReason:     out.DeclineReason,
 	}, nil
+}
+
+// refused reports whether the acquirer refused the request itself, so sending
+// it again cannot succeed: a 4xx, except a timeout or a rate limit, which can
+// go through on a later attempt. Everything else is taken as temporary.
+func refused(status int) bool {
+	return status >= 400 && status < 500 &&
+		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }

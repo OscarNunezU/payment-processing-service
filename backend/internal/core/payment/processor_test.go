@@ -3,7 +3,9 @@ package payment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 // waitingPayment stores one PENDING payment with its card sealed, exactly as
@@ -54,8 +56,8 @@ func TestProcessNextOutcomes(t *testing.T) {
 	}{
 		{"acquirer declines", &fakeAcquirer{result: AuthorizationResult{DeclineReason: "insufficient_funds"}},
 			fakeVault{}, StatusDeclined, "insufficient_funds", 1},
-		{"acquirer gives no answer", &fakeAcquirer{err: errors.New("connection refused")},
-			fakeVault{}, StatusFailed, ReasonAcquirerError, 1},
+		{"acquirer rejects the request", &fakeAcquirer{err: fmt.Errorf("%w (status 422)", ErrAcquirerRejected)},
+			fakeVault{}, StatusFailed, ReasonAcquirerRejected, 1},
 		{"card cannot be opened", &fakeAcquirer{},
 			fakeVault{openErr: errors.New("wrong key")}, StatusFailed, ReasonCardUnreadable, 0},
 	}
@@ -104,9 +106,9 @@ func TestProcessNextReportsAnOutcomeItCouldNotStore(t *testing.T) {
 	}
 }
 
-// When the worker is stopping, its context ends while the acquirer may already
-// have approved. Recording FAILED would contradict the acquirer, so nothing is
-// recorded: the payment stays PROCESSING and is taken again later.
+// When the payment runs out of time, its context ends while the acquirer may
+// already have approved. Recording FAILED would contradict the acquirer, so
+// nothing is recorded: the payment stays PROCESSING and is taken again later.
 func TestProcessNextRecordsNothingWhenInterrupted(t *testing.T) {
 	repo := waitingPayment(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,5 +124,77 @@ func TestProcessNextRecordsNothingWhenInterrupted(t *testing.T) {
 	}
 	if txn.CardData != nil {
 		t.Fatal("the returned transaction carries card data")
+	}
+}
+
+func TestAnAttemptWithoutAnswerIsRetriedLater(t *testing.T) {
+	repo := waitingPayment(t)
+	acquirer := &fakeAcquirer{err: errors.New("acquirer answered 503")}
+
+	txn, processed, err := NewProcessor(repo, fakeVault{}, acquirer).ProcessNext(context.Background())
+	if !processed || !errors.Is(err, ErrRetryScheduled) {
+		t.Fatalf("ProcessNext() = %v, %v; want processed with ErrRetryScheduled", processed, err)
+	}
+	if stored := repo.stored[0]; stored.Status != StatusProcessing || stored.CardData == nil {
+		t.Fatalf("stored = %+v, want it still PROCESSING with its card for the next attempt", stored)
+	}
+	if len(repo.retries) != 1 || repo.retries[0].reason != ReasonAcquirerUnavailable {
+		t.Fatalf("retries = %+v, want one, for acquirer_unavailable", repo.retries)
+	}
+	if d := repo.retries[0].delay; d < time.Second || d > 2*time.Second {
+		t.Fatalf("first retry after %v, want 1s to 2s", d)
+	}
+	if txn.CardData != nil {
+		t.Fatal("the returned transaction carries card data")
+	}
+}
+
+func TestTheLastAttemptWithoutAnswerEndsFailed(t *testing.T) {
+	repo := waitingPayment(t)
+	repo.stored[0].Attempts = DefaultMaxAttempts - 1 // the claim makes it the last
+	acquirer := &fakeAcquirer{err: errors.New("acquirer answered 503")}
+
+	_, processed, err := NewProcessor(repo, fakeVault{}, acquirer).ProcessNext(context.Background())
+	if !processed || err != nil {
+		t.Fatalf("ProcessNext() = %v, %v; want a processed payment", processed, err)
+	}
+	stored := repo.stored[0]
+	if stored.Status != StatusFailed || stored.Reason != ReasonAcquirerUnavailable || stored.CardData != nil {
+		t.Fatalf("stored = %s %q, want FAILED acquirer_unavailable with the card wiped", stored.Status, stored.Reason)
+	}
+	if len(repo.retries) != 0 {
+		t.Fatalf("retries = %+v, want none after the last attempt", repo.retries)
+	}
+}
+
+// If the retry cannot be stored, the payment is left as it was: PROCESSING,
+// taken again when its lease expires.
+func TestARetryThatCannotBeStoredIsReported(t *testing.T) {
+	repo := waitingPayment(t)
+	repo.retryErr = errors.New("database down")
+	acquirer := &fakeAcquirer{err: errors.New("acquirer answered 503")}
+
+	_, processed, err := NewProcessor(repo, fakeVault{}, acquirer).ProcessNext(context.Background())
+	if !processed || err == nil || errors.Is(err, ErrRetryScheduled) {
+		t.Fatalf("ProcessNext() = %v, %v; want processed with an error that is not ErrRetryScheduled", processed, err)
+	}
+	if repo.stored[0].Status != StatusProcessing {
+		t.Fatalf("stored = %+v, want it still PROCESSING", repo.stored[0])
+	}
+}
+
+func TestRetryDelayDoublesAndHalfOfItIsRandom(t *testing.T) {
+	for attempt, want := range map[int]time.Duration{1: 2 * time.Second, 2: 4 * time.Second} {
+		seen := map[time.Duration]bool{}
+		for range 100 {
+			d := retryDelay(2*time.Second, attempt)
+			if d < want/2 || d > want {
+				t.Fatalf("retryDelay(attempt %d) = %v, want %v to %v", attempt, d, want/2, want)
+			}
+			seen[d] = true
+		}
+		if len(seen) < 10 {
+			t.Fatalf("attempt %d gave only %d different delays in 100: the jitter is missing", attempt, len(seen))
+		}
 	}
 }

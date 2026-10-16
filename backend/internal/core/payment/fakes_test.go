@@ -14,9 +14,16 @@ type fakeRepository struct {
 	stored     []Transaction
 	err        error   // returned by Create
 	finishErr  error   // returned by Finish
+	retryErr   error   // returned by Retry
 	findErr    error   // returned by FindByIdempotencyKey
 	events     []Event // returned by Events, whatever the payment
+	retries    []retry // what Retry was asked
 	lastFilter ListFilter
+}
+
+type retry struct {
+	reason string
+	delay  time.Duration
 }
 
 func (f *fakeRepository) Create(_ context.Context, txn Transaction) (Transaction, bool, error) {
@@ -91,6 +98,21 @@ func (f *fakeRepository) Finish(_ context.Context, id string, outcome Outcome) e
 			f.stored[i].Reason = outcome.Reason
 			f.stored[i].AuthorizationCode = outcome.AuthorizationCode
 			f.stored[i].CardData = nil
+			return nil
+		}
+	}
+	return ErrNotProcessing
+}
+
+// Retry records the retry; the payment stays PROCESSING, as in the database,
+// and the delay is not simulated.
+func (f *fakeRepository) Retry(_ context.Context, id, reason string, delay time.Duration) error {
+	if f.retryErr != nil {
+		return f.retryErr
+	}
+	for _, txn := range f.stored {
+		if txn.ID == id && txn.Status == StatusProcessing {
+			f.retries = append(f.retries, retry{reason: reason, delay: delay})
 			return nil
 		}
 	}
