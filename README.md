@@ -4,6 +4,14 @@ Servicio que recibe solicitudes de pago de comercios, las autoriza con un adquir
 
 En el modelo de cuatro partes de los pagos con tarjeta (comercio, adquirente, red y emisor), este servicio está entre el comercio y el adquirente: recibe el pago, lo valida, lo autoriza con el adquirente y guarda su resultado. El adquirente es un servicio simulado que decide según el número de tarjeta.
 
+**En resumen**
+
+- El POST responde `202` en milisegundos y un worker autoriza el pago en segundo plano, con Postgres como cola (`SKIP LOCKED`).
+- Una clave de idempotencia por comercio: un reintento nunca cobra dos veces.
+- Cada cambio de estado deja un evento, escrito en la misma sentencia SQL que el cambio.
+- Reintentos con backoff y jitter, circuit breaker y vencimiento de los pagos que nunca se enviaron.
+- Un front en Next.js para ver cada pago y su historia, y crear pagos de prueba.
+
 ## Cómo correrlo
 
 Requisito: Docker.
@@ -120,7 +128,7 @@ flowchart LR
 - **Worker** (`internal/adapters/worker`): goroutines que toman pagos de la cola y los procesan. También vence los pagos que esperaron demasiado.
 - **Cliente del adquirente** (`internal/adapters/acquirer`): llama por HTTP con el id de la transacción como `Idempotency-Key`, envuelto por un circuit breaker.
 - **PostgreSQL** (`internal/adapters/postgres`): `transactions` guarda el estado de cada pago y es, a la vez, la cola del worker; `transaction_events` guarda su historia.
-- **Vault** (`internal/adapters/vault`): cifra la tarjeta con AES-256-GCM mientras espera al worker. Se borra al llegar a un estado final.
+- **Vault** (`internal/adapters/vault`): cifra la tarjeta con AES-256-GCM mientras espera al worker. Se borra al llegar a un estado final, y en los logs solo aparecen sus últimos 4 dígitos.
 - **Adquirente simulado** (`cmd/acquirer-mock`): otro servicio. Decide por número de tarjeta y recuerda cada respuesta por `Idempotency-Key`.
 - **Front** (`web`): Next.js. Sus páginas consultan la API desde el servidor de Next, así que el navegador nunca habla con la API ([ADR 0011](docs/decisions/0011-front-con-nextjs.md)).
 
