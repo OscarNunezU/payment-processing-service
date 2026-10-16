@@ -15,6 +15,13 @@ services:
       timeout: 3s
       retries: 15
 
+  acquirer-mock:
+    build:
+      context: ./backend
+      target: acquirer-mock
+    ports:
+      - "8081:8081"
+
   api:
     build: ./backend
     environment:
@@ -25,11 +32,19 @@ services:
       CARD_ENCRYPTION_KEY: ZGV2LW9ubHkta2V5LW5vdC1mb3ItcHJvZHVjdGlvbiE=
       MAX_AMOUNT_CLP: "5000000"
       MAX_AMOUNT_USD: "500000"
+      ACQUIRER_URL: http://acquirer-mock:8081
+      ACQUIRER_TIMEOUT: 5s
+      WORKER_CONCURRENCY: "4"
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      acquirer-mock:
+        condition: service_started
+    # Docker kills the container 10s after SIGTERM by default; payments in
+    # flight get up to 15s to finish, so give it a little more.
+    stop_grace_period: 20s
 
 volumes:
   postgres-data:

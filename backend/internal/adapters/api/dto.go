@@ -37,15 +37,16 @@ func (r createPaymentRequest) toNewPayment() payment.NewPayment {
 // paymentResponse is what a merchant sees of a transaction: never the card
 // number, the CVV or the fields the worker uses internally.
 type paymentResponse struct {
-	TransactionID string    `json:"transaction_id"`
-	MerchantID    string    `json:"merchant_id"`
-	Amount        int64     `json:"amount"`
-	Currency      string    `json:"currency"`
-	Status        string    `json:"status"`
-	CardLast4     string    `json:"card_last4"`
-	Reason        string    `json:"reason,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	TransactionID     string    `json:"transaction_id"`
+	MerchantID        string    `json:"merchant_id"`
+	Amount            int64     `json:"amount"`
+	Currency          string    `json:"currency"`
+	Status            string    `json:"status"`
+	CardLast4         string    `json:"card_last4"`
+	Reason            string    `json:"reason,omitempty"`
+	AuthorizationCode string    `json:"authorization_code,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // listResponse wraps the list in an object, so pagination fields can be added
@@ -64,14 +65,15 @@ func toListResponse(txns []payment.Transaction) listResponse {
 
 func toPaymentResponse(txn payment.Transaction) paymentResponse {
 	return paymentResponse{
-		TransactionID: txn.ID,
-		MerchantID:    txn.MerchantID,
-		Amount:        txn.Amount,
-		Currency:      txn.Currency,
-		Status:        string(txn.Status),
-		CardLast4:     txn.CardLast4,
-		Reason:        txn.Reason,
-		CreatedAt:     txn.CreatedAt,
-		UpdatedAt:     txn.UpdatedAt,
+		TransactionID:     txn.ID,
+		MerchantID:        txn.MerchantID,
+		Amount:            txn.Amount,
+		Currency:          txn.Currency,
+		Status:            string(txn.Status),
+		CardLast4:         txn.CardLast4,
+		Reason:            txn.Reason,
+		AuthorizationCode: txn.AuthorizationCode,
+		CreatedAt:         txn.CreatedAt,
+		UpdatedAt:         txn.UpdatedAt,
 	}
 }

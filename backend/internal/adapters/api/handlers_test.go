@@ -47,12 +47,16 @@ func get(payments fakePayments, target string) *httptest.ResponseRecorder {
 }
 
 func TestGetPayment(t *testing.T) {
-	txn := payment.Transaction{ID: "txn-1", MerchantID: "merchant-001", Status: payment.StatusApproved, CardLast4: "1111"}
+	txn := payment.Transaction{
+		ID: "txn-1", MerchantID: "merchant-001", Status: payment.StatusApproved,
+		CardLast4: "1111", AuthorizationCode: "A1B2C3",
+	}
 
 	rec := get(fakePayments{txn: txn}, "/payments/txn-1")
 	var got paymentResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || got.TransactionID != "txn-1" {
-		t.Fatalf("GET /payments/txn-1 = %d %s, want 200 with the transaction", rec.Code, rec.Body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil ||
+		got.TransactionID != "txn-1" || got.AuthorizationCode != "A1B2C3" {
+		t.Fatalf("GET /payments/txn-1 = %d %s, want 200 with the transaction and its authorization code", rec.Code, rec.Body)
 	}
 
 	rec = get(fakePayments{err: payment.ErrNotFound}, "/payments/missing")
@@ -147,6 +151,10 @@ func TestCreatePaymentErrors(t *testing.T) {
 	}{
 		{"body is not json", `{"amount":`, nil, http.StatusBadRequest, "invalid_json"},
 		{"unknown field", `{"ammount":15000}`, nil, http.StatusBadRequest, "invalid_json"},
+		{"garbage after the json", validBody + ` xyz`, nil, http.StatusBadRequest, "invalid_json"},
+		{"two json values", validBody + `{}`, nil, http.StatusBadRequest, "invalid_json"},
+		{"body over 1 MB", `{"merchant_id":"` + strings.Repeat("a", 2<<20) + `"}`, nil,
+			http.StatusRequestEntityTooLarge, "body_too_large"},
 		{"malformed fields", validBody, invalid, http.StatusBadRequest, "invalid_request"},
 		{"business rule broken", validBody, fmt.Errorf("%w: 9000000 > 5000000 CLP", payment.ErrAmountExceedsMax),
 			http.StatusUnprocessableEntity, "amount_exceeds_max"},
