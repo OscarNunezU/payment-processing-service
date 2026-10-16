@@ -14,16 +14,34 @@ type fakeRepository struct {
 	stored     []Transaction
 	err        error // returned by Create
 	finishErr  error // returned by Finish
+	findErr    error // returned by FindByIdempotencyKey
 	lastFilter ListFilter
 }
 
-func (f *fakeRepository) Create(_ context.Context, txn Transaction) (Transaction, error) {
+func (f *fakeRepository) Create(_ context.Context, txn Transaction) (Transaction, bool, error) {
 	if f.err != nil {
-		return Transaction{}, f.err
+		return Transaction{}, false, f.err
+	}
+	for _, existing := range f.stored {
+		if existing.MerchantID == txn.MerchantID && existing.IdempotencyKey == txn.IdempotencyKey {
+			return existing, false, nil
+		}
 	}
 	txn.ID = fmt.Sprintf("txn-%d", len(f.stored)+1)
 	f.stored = append(f.stored, txn)
-	return txn, nil
+	return txn, true, nil
+}
+
+func (f *fakeRepository) FindByIdempotencyKey(_ context.Context, merchantID, key string) (Transaction, bool, error) {
+	if f.findErr != nil {
+		return Transaction{}, false, f.findErr
+	}
+	for _, txn := range f.stored {
+		if txn.MerchantID == merchantID && txn.IdempotencyKey == key {
+			return txn, true, nil
+		}
+	}
+	return Transaction{}, false, nil
 }
 
 func (f *fakeRepository) Get(_ context.Context, id string) (Transaction, error) {

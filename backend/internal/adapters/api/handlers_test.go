@@ -18,14 +18,19 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
 type fakePayments struct {
-	txn       payment.Transaction
-	list      []payment.Transaction
-	err       error
-	gotFilter *payment.ListFilter // when set, List records the filter it received
+	txn        payment.Transaction
+	list       []payment.Transaction
+	replayed   bool
+	err        error
+	gotFilter  *payment.ListFilter // when set, List records the filter it received
+	gotPayment *payment.NewPayment // when set, Create records the payment it received
 }
 
-func (f fakePayments) Create(context.Context, payment.NewPayment) (payment.Transaction, error) {
-	return f.txn, f.err
+func (f fakePayments) Create(_ context.Context, p payment.NewPayment) (payment.Transaction, bool, error) {
+	if f.gotPayment != nil {
+		*f.gotPayment = p
+	}
+	return f.txn, f.replayed, f.err
 }
 
 func (f fakePayments) Get(context.Context, string) (payment.Transaction, error) {
@@ -116,9 +121,55 @@ const validBody = `{"merchant_id":"merchant-001","amount":15000,"currency":"CLP"
 
 func postPayment(payments fakePayments, body string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	router := NewRouter(NewHandler(fakePinger{}, payments))
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/payments", strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPost, "/payments", strings.NewReader(body))
+	req.Header.Set("Idempotency-Key", "order-1001")
+	NewRouter(NewHandler(fakePinger{}, payments)).ServeHTTP(rec, req)
 	return rec
+}
+
+func TestCreatePaymentPassesTheIdempotencyKeyToTheCore(t *testing.T) {
+	var got payment.NewPayment
+	postPayment(fakePayments{txn: payment.Transaction{ID: "txn-1"}, gotPayment: &got}, validBody)
+
+	if got.IdempotencyKey != "order-1001" || got.MerchantID != "merchant-001" {
+		t.Fatalf("the core received %+v, want the payment with the key from the header", got)
+	}
+}
+
+func TestCreatePaymentMarksAReplay(t *testing.T) {
+	txn := payment.Transaction{ID: "txn-1", Status: payment.StatusApproved}
+
+	first := postPayment(fakePayments{txn: txn}, validBody)
+	replay := postPayment(fakePayments{txn: txn, replayed: true}, validBody)
+
+	if first.Header().Get("Idempotent-Replayed") != "" {
+		t.Fatal("a new payment was marked as replayed")
+	}
+	if replay.Code != http.StatusAccepted || replay.Header().Get("Idempotent-Replayed") != "true" ||
+		replay.Header().Get("Location") != "/payments/txn-1" {
+		t.Fatalf("replay = %d, headers %v; want 202 with Idempotent-Replayed: true", replay.Code, replay.Header())
+	}
+}
+
+func TestCreatePaymentRejectsAReusedKey(t *testing.T) {
+	rec := postPayment(fakePayments{err: payment.ErrIdempotencyKeyReused}, validBody)
+
+	var got errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil ||
+		rec.Code != http.StatusUnprocessableEntity || got.Code != "idempotency_key_reused" {
+		t.Fatalf("got %d %s, want 422 idempotency_key_reused", rec.Code, rec.Body)
+	}
+}
+
+func TestAMissingKeyIsReportedAsTheHeader(t *testing.T) {
+	invalid := &payment.ValidationError{Fields: []payment.FieldError{{Field: "idempotency_key", Message: "is required"}}}
+
+	rec := postPayment(fakePayments{err: invalid}, validBody)
+
+	var got errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Fields) != 1 || got.Fields[0].Field != "Idempotency-Key" {
+		t.Fatalf("body = %s, want the field named Idempotency-Key, as the merchant sends it", rec.Body)
+	}
 }
 
 func TestCreatePaymentAnswers202WithTheTransaction(t *testing.T) {

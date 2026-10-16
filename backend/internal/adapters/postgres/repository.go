@@ -24,17 +24,53 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 // columns is the read order that scanTransaction expects.
-const columns = `id::text, merchant_id, amount, currency, status, card_last4, card_data,
-	COALESCE(reason, ''), COALESCE(authorization_code, ''), attempts, available_at, created_at, updated_at`
+const columns = `id::text, merchant_id, COALESCE(idempotency_key, ''), COALESCE(request_fingerprint, ''),
+	amount, currency, status, card_last4, card_data, COALESCE(reason, ''), COALESCE(authorization_code, ''),
+	attempts, available_at, created_at, updated_at`
 
-func (r *Repository) Create(ctx context.Context, txn payment.Transaction) (payment.Transaction, error) {
-	row := r.db.QueryRow(ctx, `
-		INSERT INTO transactions (merchant_id, amount, currency, status, card_last4, card_data)
-		VALUES ($1, $2, $3, $4, $5, $6)
+// Create relies on the unique index over (merchant_id, idempotency_key): if the
+// key is taken, nothing is inserted and the payment that holds it is returned.
+// When two requests with the same key race, the second waits for the first to
+// commit and ends the same way.
+func (r *Repository) Create(ctx context.Context, txn payment.Transaction) (payment.Transaction, bool, error) {
+	stored, err := scanTransaction(r.db.QueryRow(ctx, `
+		INSERT INTO transactions
+		    (merchant_id, idempotency_key, request_fingerprint, amount, currency, status, card_last4, card_data)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
 		RETURNING `+columns,
-		txn.MerchantID, txn.Amount, txn.Currency, string(txn.Status), txn.CardLast4, txn.CardData,
-	)
-	return scanTransaction(row)
+		txn.MerchantID, txn.IdempotencyKey, txn.RequestFingerprint, txn.Amount, txn.Currency,
+		string(txn.Status), txn.CardLast4, txn.CardData,
+	))
+	if err == nil {
+		return stored, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return payment.Transaction{}, false, err
+	}
+
+	existing, found, err := r.FindByIdempotencyKey(ctx, txn.MerchantID, txn.IdempotencyKey)
+	if err != nil {
+		return payment.Transaction{}, false, err
+	}
+	if !found {
+		return payment.Transaction{}, false, fmt.Errorf("idempotency key %q conflicted but its payment was not found", txn.IdempotencyKey)
+	}
+	return existing, false, nil
+}
+
+func (r *Repository) FindByIdempotencyKey(ctx context.Context, merchantID, key string) (payment.Transaction, bool, error) {
+	txn, err := scanTransaction(r.db.QueryRow(ctx,
+		`SELECT `+columns+` FROM transactions WHERE merchant_id = $1 AND idempotency_key = $2`,
+		merchantID, key,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment.Transaction{}, false, nil
+	}
+	if err != nil {
+		return payment.Transaction{}, false, err
+	}
+	return txn, true, nil
 }
 
 func (r *Repository) Get(ctx context.Context, id string) (payment.Transaction, error) {
@@ -143,8 +179,9 @@ func scanTransaction(row pgx.Row) (payment.Transaction, error) {
 		status string
 	)
 	err := row.Scan(
-		&txn.ID, &txn.MerchantID, &txn.Amount, &txn.Currency, &status, &txn.CardLast4, &txn.CardData,
-		&txn.Reason, &txn.AuthorizationCode, &txn.Attempts, &txn.AvailableAt, &txn.CreatedAt, &txn.UpdatedAt,
+		&txn.ID, &txn.MerchantID, &txn.IdempotencyKey, &txn.RequestFingerprint,
+		&txn.Amount, &txn.Currency, &status, &txn.CardLast4, &txn.CardData, &txn.Reason, &txn.AuthorizationCode,
+		&txn.Attempts, &txn.AvailableAt, &txn.CreatedAt, &txn.UpdatedAt,
 	)
 	txn.Status = payment.Status(status)
 	return txn, err

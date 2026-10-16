@@ -43,24 +43,27 @@ func uniqueMerchant() string {
 	return "test-" + rand.Text()
 }
 
+// newTransaction gets a fresh idempotency key, so every call is a new payment.
 func newTransaction(merchant string, status payment.Status) payment.Transaction {
 	return payment.Transaction{
-		MerchantID: merchant,
-		Amount:     15000,
-		Currency:   "CLP",
-		Status:     status,
-		CardLast4:  "1111",
-		CardData:   []byte("sealed card data"),
+		MerchantID:         merchant,
+		IdempotencyKey:     "key-" + rand.Text(),
+		RequestFingerprint: "fingerprint",
+		Amount:             15000,
+		Currency:           "CLP",
+		Status:             status,
+		CardLast4:          "1111",
+		CardData:           []byte("sealed card data"),
 	}
 }
 
 func mustCreate(t *testing.T, repo *Repository, txn payment.Transaction) payment.Transaction {
 	t.Helper()
-	created, err := repo.Create(context.Background(), txn)
-	if err != nil {
-		t.Fatalf("Create() = %v", err)
+	stored, created, err := repo.Create(context.Background(), txn)
+	if err != nil || !created {
+		t.Fatalf("Create() = %v, created %v; want a new payment", err, created)
 	}
-	return created
+	return stored
 }
 
 func mustClaim(t *testing.T, repo *Repository, lease time.Duration) payment.Transaction {
@@ -137,7 +140,7 @@ func TestListFiltersAndOrdersNewestFirst(t *testing.T) {
 func TestDatabaseRejectsAnUnknownStatus(t *testing.T) {
 	repo := testRepository(t)
 
-	if _, err := repo.Create(context.Background(), newTransaction(uniqueMerchant(), "PAID")); err == nil {
+	if _, _, err := repo.Create(context.Background(), newTransaction(uniqueMerchant(), "PAID")); err == nil {
 		t.Fatal("Create() accepted status PAID; the CHECK constraint should reject it")
 	}
 }
@@ -244,5 +247,72 @@ func TestFinishRejectsAStatusThatIsNotFinal(t *testing.T) {
 	got, err := repo.Get(ctx, created.ID)
 	if err != nil || got.Status != payment.StatusProcessing || got.CardData == nil {
 		t.Fatalf("after a rejected Finish = %+v, %v; want it still PROCESSING with its card", got, err)
+	}
+}
+
+func TestCreateIsIdempotentPerMerchant(t *testing.T) {
+	repo := testRepository(t)
+	ctx := context.Background()
+	txn := newTransaction(uniqueMerchant(), payment.StatusPending)
+	first := mustCreate(t, repo, txn)
+
+	again, created, err := repo.Create(ctx, txn)
+	if err != nil || created || again.ID != first.ID || again.RequestFingerprint != "fingerprint" {
+		t.Fatalf("second Create() = %s, created %v, %v; want the first payment and created false", again.ID, created, err)
+	}
+
+	otherMerchant := txn
+	otherMerchant.MerchantID = uniqueMerchant()
+	if other := mustCreate(t, repo, otherMerchant); other.ID == first.ID {
+		t.Fatal("the same key from another merchant returned the first merchant's payment")
+	}
+}
+
+func TestFindByIdempotencyKey(t *testing.T) {
+	repo := testRepository(t)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+
+	got, found, err := repo.FindByIdempotencyKey(ctx, created.MerchantID, created.IdempotencyKey)
+	if err != nil || !found || got.ID != created.ID {
+		t.Fatalf("FindByIdempotencyKey() = %s, %v, %v; want the payment", got.ID, found, err)
+	}
+	if _, found, err := repo.FindByIdempotencyKey(ctx, created.MerchantID, "unknown-key"); found || err != nil {
+		t.Fatalf("FindByIdempotencyKey(unknown) = %v, %v; want not found", found, err)
+	}
+}
+
+func TestConcurrentCreatesWithTheSameKeyStoreOnePayment(t *testing.T) {
+	repo := testRepository(t)
+	txn := newTransaction(uniqueMerchant(), payment.StatusPending)
+
+	var (
+		wg      sync.WaitGroup
+		created atomic.Int32
+		ids     sync.Map
+	)
+	for range 10 {
+		wg.Go(func() {
+			stored, isNew, err := repo.Create(context.Background(), txn)
+			if err != nil {
+				t.Errorf("Create() = %v", err)
+				return
+			}
+			if isNew {
+				created.Add(1)
+			}
+			ids.Store(stored.ID, true)
+		})
+	}
+	wg.Wait()
+
+	distinct := 0
+	ids.Range(func(any, any) bool { distinct++; return true })
+	if created.Load() != 1 || distinct != 1 {
+		t.Fatalf("%d creates reported new and %d distinct ids, want 1 and 1", created.Load(), distinct)
+	}
+	list, err := repo.List(context.Background(), payment.ListFilter{MerchantID: txn.MerchantID, Limit: 50})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("%d payments stored for the merchant, %v; want exactly 1", len(list), err)
 	}
 }

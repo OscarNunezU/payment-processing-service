@@ -7,7 +7,15 @@ import (
 
 // Repository is what the core needs from storage.
 type Repository interface {
-	Create(ctx context.Context, txn Transaction) (Transaction, error)
+	// Create stores a new payment. If its merchant already has a payment with
+	// the same idempotency key, nothing is stored: that payment is returned and
+	// created is false.
+	Create(ctx context.Context, txn Transaction) (stored Transaction, created bool, err error)
+
+	// FindByIdempotencyKey returns the merchant's payment with that key; ok is
+	// false when there is none.
+	FindByIdempotencyKey(ctx context.Context, merchantID, key string) (txn Transaction, ok bool, err error)
+
 	Get(ctx context.Context, id string) (Transaction, error)
 	List(ctx context.Context, filter ListFilter) ([]Transaction, error)
 

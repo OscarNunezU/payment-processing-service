@@ -2,10 +2,11 @@ package payment
 
 // NewPayment is what a merchant sends to create a payment.
 type NewPayment struct {
-	MerchantID string
-	Amount     int64
-	Currency   string
-	Card       Card
+	MerchantID     string
+	IdempotencyKey string // chosen by the merchant; one payment per key
+	Amount         int64
+	Currency       string
+	Card           Card
 }
 
 // Validate checks the shape of the request and reports every malformed field
@@ -20,6 +21,11 @@ func (p NewPayment) Validate() error {
 		add("merchant_id", "is required")
 	} else if len(p.MerchantID) > 64 {
 		add("merchant_id", "must be at most 64 characters")
+	}
+	if p.IdempotencyKey == "" {
+		add("idempotency_key", "is required")
+	} else if len(p.IdempotencyKey) > 255 || !isPrintableASCII(p.IdempotencyKey) {
+		add("idempotency_key", "must be 1 to 255 printable ASCII characters")
 	}
 	if p.Amount <= 0 {
 		add("amount", "must be a positive integer in minor units")
@@ -52,6 +58,15 @@ func isDigits(s string) bool {
 	}
 	for _, r := range s {
 		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
 			return false
 		}
 	}
