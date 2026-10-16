@@ -58,6 +58,14 @@ El adquirente simulado decide según el número de tarjeta:
 | `4111111111111111` | `APPROVED`, con `authorization_code` |
 | `4000000000000002` | `DECLINED`, motivo `card_declined` |
 | `4000000000009995` | `DECLINED`, motivo `insufficient_funds` |
+| `4000000000000119` | el adquirente responde `503` siempre: 3 intentos y `FAILED`, motivo `acquirer_unavailable` |
+| `4000000000000127` | `503` la primera vez: el segundo intento termina `APPROVED` |
+| `4000000000000135` | aprueba, pero responde después del timeout: el reintento recibe la misma aprobación |
+| `4000000000000143` | el adquirente rechaza la request (`422`): `FAILED`, motivo `acquirer_rejected`, sin reintentos |
+
+### Errores temporales del adquirente
+
+Ante un timeout, un `5xx`, un `408` o `429`, una conexión caída o una respuesta ilegible, el pago tiene hasta 3 intentos, con esperas de 1-2 s y luego 2-4 s entre ellos. Reintentar es seguro porque cada llamada lleva el id de la transacción como `Idempotency-Key`, y cada intento queda en la historia del pago. Detalle en la [ADR 0009](docs/decisions/0009-reintentos-de-errores-temporales.md).
 
 ### Desarrollo local sin Docker para la API
 
@@ -90,3 +98,4 @@ El CI corre los dos: levanta un Postgres como servicio, así que ningún test se
 | [0006](docs/decisions/0006-estrategia-de-tests.md) | Tests con la librería estándar y Postgres real |
 | [0007](docs/decisions/0007-idempotencia-por-comercio.md) | Idempotencia por comercio con el header `Idempotency-Key` |
 | [0008](docs/decisions/0008-trazabilidad-con-eventos.md) | Trazabilidad con una tabla de eventos escrita junto con cada cambio |
+| [0009](docs/decisions/0009-reintentos-de-errores-temporales.md) | Reintentos de errores temporales del adquirente, con backoff y jitter |

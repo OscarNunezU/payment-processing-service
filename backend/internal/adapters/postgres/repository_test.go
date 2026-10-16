@@ -365,9 +365,62 @@ func TestAChangeThatDoesNotHappenRecordsNoEvent(t *testing.T) {
 	if !errors.Is(err, payment.ErrNotProcessing) {
 		t.Fatalf("Finish() on a PENDING payment = %v, want ErrNotProcessing", err)
 	}
+	if err := repo.Retry(ctx, created.ID, "acquirer_unavailable", 0); !errors.Is(err, payment.ErrNotProcessing) {
+		t.Fatalf("Retry() on a PENDING payment = %v, want ErrNotProcessing", err)
+	}
 
 	events, err := repo.Events(ctx, created.ID)
 	if err != nil || len(events) != 1 || events[0].Status != payment.StatusPending {
 		t.Fatalf("Events() = %+v, %v; want only the PENDING event", events, err)
+	}
+}
+
+func TestARetriedPaymentWaitsForItsDelay(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+	mustClaim(t, repo, time.Minute)
+
+	if err := repo.Retry(ctx, created.ID, "acquirer_unavailable", time.Minute); err != nil {
+		t.Fatalf("Retry() = %v", err)
+	}
+	if txn, ok, err := repo.ClaimNext(ctx, time.Minute); ok || err != nil {
+		t.Fatalf("ClaimNext() = %s, %v, %v; want nothing until the delay passes", txn.ID, ok, err)
+	}
+	got, err := repo.Get(ctx, created.ID)
+	if err != nil || got.Status != payment.StatusProcessing || got.CardData == nil {
+		t.Fatalf("after Retry = %+v, %v; want it PROCESSING with its card for the next attempt", got, err)
+	}
+}
+
+func TestARetryIsRecordedAndTheNextAttemptCounts(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+	mustClaim(t, repo, time.Minute)
+
+	if err := repo.Retry(ctx, created.ID, "acquirer_unavailable", 0); err != nil {
+		t.Fatalf("Retry() = %v", err)
+	}
+	if again := mustClaim(t, repo, time.Minute); again.ID != created.ID || again.Attempts != 2 {
+		t.Fatalf("claim after the retry = %s on attempt %d, want %s on attempt 2", again.ID, again.Attempts, created.ID)
+	}
+
+	events, err := repo.Events(ctx, created.ID)
+	want := []payment.Event{
+		{Status: payment.StatusPending, Attempt: 0},
+		{Status: payment.StatusProcessing, Attempt: 1},
+		{Status: payment.StatusProcessing, Attempt: 1, Reason: "acquirer_unavailable"},
+		{Status: payment.StatusProcessing, Attempt: 2},
+	}
+	if err != nil || len(events) != len(want) {
+		t.Fatalf("Events() = %+v, %v; want %d events", events, err, len(want))
+	}
+	for i, e := range events {
+		if e.Status != want[i].Status || e.Attempt != want[i].Attempt || e.Reason != want[i].Reason {
+			t.Errorf("event %d = %+v, want %+v", i, e, want[i])
+		}
 	}
 }

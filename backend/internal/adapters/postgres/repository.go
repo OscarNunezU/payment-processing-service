@@ -30,11 +30,14 @@ const columns = `id::text, merchant_id, COALESCE(idempotency_key, ''), COALESCE(
 
 // recordEvent completes a WITH clause whose first statement, changed, returns
 // the rows it modified: each one gets an event in the same statement as the
-// change, so neither can be stored without the other.
-const recordEvent = `event AS (
+// change, so neither can be stored without the other. reason is the SQL
+// expression for the event's reason: the row's own, or one passed in.
+func recordEvent(reason string) string {
+	return `event AS (
 		INSERT INTO transaction_events (transaction_id, status, attempt, reason)
-		SELECT id, status, attempts, reason FROM changed
+		SELECT id, status, attempts, ` + reason + ` FROM changed
 	)`
+}
 
 // Create relies on the unique index over (merchant_id, idempotency_key): if the
 // key is taken, nothing is inserted and the payment that holds it is returned.
@@ -48,7 +51,7 @@ func (r *Repository) Create(ctx context.Context, txn payment.Transaction) (payme
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
 			RETURNING *
-		), `+recordEvent+`
+		), `+recordEvent("reason")+`
 		SELECT `+columns+` FROM changed`,
 		txn.MerchantID, txn.IdempotencyKey, txn.RequestFingerprint, txn.Amount, txn.Currency,
 		string(txn.Status), txn.CardLast4, txn.CardData,
@@ -149,7 +152,7 @@ func (r *Repository) ClaimNext(ctx context.Context, lease time.Duration) (paymen
 				FOR UPDATE SKIP LOCKED
 			)
 			RETURNING *
-		), `+recordEvent+`
+		), `+recordEvent("reason")+`
 		SELECT `+columns+` FROM changed`,
 		lease.Seconds(),
 	))
@@ -179,7 +182,7 @@ func (r *Repository) Finish(ctx context.Context, id string, outcome payment.Outc
 			    updated_at = now()
 			WHERE id = $1 AND status = 'PROCESSING'
 			RETURNING *
-		), `+recordEvent+`
+		), `+recordEvent("reason")+`
 		SELECT count(*) FROM changed`,
 		id, string(outcome.Status), outcome.Reason, outcome.AuthorizationCode,
 	).Scan(&finished)
@@ -187,6 +190,30 @@ func (r *Repository) Finish(ctx context.Context, id string, outcome payment.Outc
 		return err
 	}
 	if finished == 0 {
+		return payment.ErrNotProcessing
+	}
+	return nil
+}
+
+// Retry replaces the lease with the delay: once it passes, any worker may make
+// the next attempt.
+func (r *Repository) Retry(ctx context.Context, id, reason string, delay time.Duration) error {
+	var retried int
+	err := r.db.QueryRow(ctx, `
+		WITH changed AS (
+			UPDATE transactions
+			SET available_at = now() + make_interval(secs => $2),
+			    updated_at = now()
+			WHERE id = $1 AND status = 'PROCESSING'
+			RETURNING *
+		), `+recordEvent("$3::text")+`
+		SELECT count(*) FROM changed`,
+		id, delay.Seconds(), reason,
+	).Scan(&retried)
+	if err != nil {
+		return err
+	}
+	if retried == 0 {
 		return payment.ErrNotProcessing
 	}
 	return nil

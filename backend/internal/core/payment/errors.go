@@ -12,6 +12,13 @@ var (
 	// claimed, or another worker already finished it after this one's lease
 	// expired.
 	ErrNotProcessing = errors.New("payment is not being processed")
+	// ErrAcquirerRejected means the acquirer refused the request itself, not
+	// the payment: sending it again cannot succeed. Any other error from the
+	// acquirer is taken as temporary.
+	ErrAcquirerRejected = errors.New("acquirer rejected the request")
+	// ErrRetryScheduled means the acquirer gave no answer and the payment got
+	// another attempt later; until then it stays PROCESSING.
+	ErrRetryScheduled = errors.New("retry scheduled")
 )
 
 type FieldError struct {

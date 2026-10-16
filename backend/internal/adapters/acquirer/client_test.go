@@ -3,6 +3,7 @@ package acquirer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,9 @@ func TestAuthorizeFailsWhenNoAnswerCanBeObtained(t *testing.T) {
 		{"server error", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}},
+		{"rate limited", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		}},
 		{"response is not json", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`not json`))
 		}},
@@ -77,12 +81,26 @@ func TestAuthorizeFailsWhenNoAnswerCanBeObtained(t *testing.T) {
 
 			start := time.Now()
 			_, err := NewClient(server.URL, 100*time.Millisecond).Authorize(context.Background(), request)
-			if err == nil {
-				t.Fatal("Authorize() returned no error")
+			if err == nil || errors.Is(err, payment.ErrAcquirerRejected) {
+				t.Fatalf("Authorize() = %v, want an error that can be retried", err)
 			}
 			if elapsed := time.Since(start); elapsed > time.Second {
 				t.Fatalf("Authorize() took %v: the timeout did not cut the call", elapsed)
 			}
 		})
+	}
+}
+
+func TestARefusedRequestCannotBeRetried(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+
+		_, err := NewClient(server.URL, time.Second).Authorize(context.Background(), request)
+		server.Close()
+		if !errors.Is(err, payment.ErrAcquirerRejected) {
+			t.Errorf("status %d: Authorize() = %v, want ErrAcquirerRejected", status, err)
+		}
 	}
 }
