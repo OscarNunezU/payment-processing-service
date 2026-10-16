@@ -275,7 +275,8 @@ Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el 
 | Si la base no responde, el POST responde `500` | `503` con `Retry-After`, para que el comercio reintente con la misma clave |
 | El worker revisa la cola cada 500 ms | `LISTEN/NOTIFY` de Postgres, para despertar al worker al instante |
 | Cada réplica tiene una cantidad fija de workers | Escalar según el largo de la cola |
-| El listado sin `merchant_id` no tiene un índice a su medida y recorre la tabla | Un índice para ese caso, o paginación por cursor |
+| El listado devuelve los pagos más recientes, hasta 100, sin paginación (el front muestra 50) | Paginación por cursor, como `starting_after` y `has_more` de Stripe: no repite ni salta pagos aunque lleguen nuevos, y cada página cuesta lo mismo |
+| El listado sin `merchant_id` no tiene un índice a su medida y recorre la tabla | Un índice para ese caso |
 
 **Rendimiento medido en local** (un Mac mini, con el binario nativo contra el Postgres de compose, 2.000 pagos y 50 conexiones): crear un pago rinde unas 8.600 req/s, con una latencia mediana de 5,4 ms, y el worker procesa unos 1.240 pagos/s contra el adquirente simulado. Con un adquirente real, que tarda cientos de milisegundos por autorización, el límite deja de ser la base. Lo que escala entonces es `WORKER_CONCURRENCY` o la cantidad de réplicas, y `SKIP LOCKED` permite sumar workers sin que dos tomen el mismo pago.
 
