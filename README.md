@@ -67,6 +67,8 @@ El adquirente simulado decide según el número de tarjeta:
 
 Ante un timeout, un `5xx`, un `408` o `429`, una conexión caída o una respuesta ilegible, el pago tiene hasta 3 intentos, con esperas de 1-2 s y luego 2-4 s entre ellos. Reintentar es seguro porque cada llamada lleva el id de la transacción como `Idempotency-Key`, y cada intento queda en la historia del pago. Detalle en la [ADR 0009](docs/decisions/0009-reintentos-de-errores-temporales.md).
 
+Si el adquirente acumula 5 fallas seguidas, un circuit breaker deja de llamarlo por 30 s: el worker no toma pagos, y estos esperan en la cola sin gastar intentos. Un pago que sigue `PENDING` después de 2 minutos, sin haberse enviado nunca, termina `FAILED` con motivo `expired`. Detalle en la [ADR 0010](docs/decisions/0010-breaker-y-vencimiento.md).
+
 ### Desarrollo local sin Docker para la API
 
 ```bash
