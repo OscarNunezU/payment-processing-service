@@ -22,18 +22,29 @@ curl -i -X POST localhost:8080/payments \
        "card":{"number":"4111111111111111","expiry_month":12,"expiry_year":2030,"cvv":"123"}}'
 ```
 
-Consultar un pago, o listarlos con filtros (`merchant_id`, `status` y `limit` son opcionales; por defecto 50, máximo 100):
+Un worker toma el pago en segundo plano, lo autoriza con el adquirente simulado y lo deja en su estado final, normalmente en menos de un segundo. Para ver el resultado, consulta el pago, o lista los pagos con filtros (`merchant_id`, `status` y `limit` son opcionales; por defecto 50, máximo 100):
 
 ```bash
 curl -s localhost:8080/payments/<transaction_id>
-curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=PENDING&limit=10'
+curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=APPROVED&limit=10'
 ```
+
+### Tarjetas de prueba
+
+El adquirente simulado decide según el número de tarjeta:
+
+| Tarjeta | Resultado |
+|---|---|
+| `4111111111111111` | `APPROVED`, con `authorization_code` |
+| `4000000000000002` | `DECLINED`, motivo `card_declined` |
+| `4000000000009995` | `DECLINED`, motivo `insufficient_funds` |
 
 ### Desarrollo local sin Docker para la API
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres acquirer-mock
 cp .env.example .env
+# completa CARD_ENCRYPTION_KEY en .env con: openssl rand -base64 32
 set -a && source .env && set +a
 cd backend && go run ./cmd/server
 ```

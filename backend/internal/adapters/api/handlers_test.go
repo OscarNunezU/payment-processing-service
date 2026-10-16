@@ -47,12 +47,16 @@ func get(payments fakePayments, target string) *httptest.ResponseRecorder {
 }
 
 func TestGetPayment(t *testing.T) {
-	txn := payment.Transaction{ID: "txn-1", MerchantID: "merchant-001", Status: payment.StatusApproved, CardLast4: "1111"}
+	txn := payment.Transaction{
+		ID: "txn-1", MerchantID: "merchant-001", Status: payment.StatusApproved,
+		CardLast4: "1111", AuthorizationCode: "A1B2C3",
+	}
 
 	rec := get(fakePayments{txn: txn}, "/payments/txn-1")
 	var got paymentResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || got.TransactionID != "txn-1" {
-		t.Fatalf("GET /payments/txn-1 = %d %s, want 200 with the transaction", rec.Code, rec.Body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil ||
+		got.TransactionID != "txn-1" || got.AuthorizationCode != "A1B2C3" {
+		t.Fatalf("GET /payments/txn-1 = %d %s, want 200 with the transaction and its authorization code", rec.Code, rec.Body)
 	}
 
 	rec = get(fakePayments{err: payment.ErrNotFound}, "/payments/missing")
