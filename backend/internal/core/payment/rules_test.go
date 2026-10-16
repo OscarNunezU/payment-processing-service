@@ -18,10 +18,12 @@ func TestCheckRules(t *testing.T) {
 		want   error
 	}{
 		{"valid payment", func(*NewPayment) {}, nil},
-		{"amount exactly at the limit", func(p *NewPayment) { p.Amount = 5_000_000 }, nil},
-		{"usd within its limit", func(p *NewPayment) { p.Currency, p.Amount = "USD", 12_000 }, nil},
+		{"clp exactly at its limit", func(p *NewPayment) { p.Amount = 5_000_000 }, nil},
+		{"clp over its limit", func(p *NewPayment) { p.Amount = 5_000_001 }, ErrAmountExceedsMax},
+		// Each currency has its own limit: 500,001 USD cents is far under the CLP one.
+		{"usd exactly at its limit", func(p *NewPayment) { p.Currency, p.Amount = "USD", 500_000 }, nil},
+		{"usd over its limit", func(p *NewPayment) { p.Currency, p.Amount = "USD", 500_001 }, ErrAmountExceedsMax},
 		{"currency not accepted", func(p *NewPayment) { p.Currency = "EUR" }, ErrCurrencyNotSupported},
-		{"amount over the limit", func(p *NewPayment) { p.Amount = 5_000_001 }, ErrAmountExceedsMax},
 		{"card fails the luhn check", func(p *NewPayment) { p.Card.Number = "4111111111111112" }, ErrInvalidCardNumber},
 		{"card expired", func(p *NewPayment) { p.Card.ExpiryMonth, p.Card.ExpiryYear = 9, 2026 }, ErrCardExpired},
 	}

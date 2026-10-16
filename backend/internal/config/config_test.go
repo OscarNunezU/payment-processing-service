@@ -36,6 +36,20 @@ func TestLoadUsesTheDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadReadsTheAmountLimits(t *testing.T) {
+	setRequired(t)
+	t.Setenv("MAX_AMOUNT_CLP", "1000000")
+	t.Setenv("MAX_AMOUNT_USD", "250000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if cfg.MaxAmounts["CLP"] != 1_000_000 || cfg.MaxAmounts["USD"] != 250_000 {
+		t.Fatalf("MaxAmounts = %v, want CLP 1000000 and USD 250000", cfg.MaxAmounts)
+	}
+}
+
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name, key, value string
@@ -46,6 +60,7 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		{"key of 16 bytes", "CARD_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZg=="},
 		{"limit that is not a number", "MAX_AMOUNT_CLP", "mucho"},
 		{"limit that is not positive", "MAX_AMOUNT_USD", "0"},
+		{"limit with decimals", "MAX_AMOUNT_USD", "5000.00"},
 		{"timeout without a unit", "ACQUIRER_TIMEOUT", "5"},
 		{"negative timeout", "ACQUIRER_TIMEOUT", "-1s"},
 		{"no workers", "WORKER_CONCURRENCY", "0"},
