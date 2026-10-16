@@ -251,9 +251,10 @@ Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el 
 ```bash
 make ci                 # formato, vet y tests con -race; sin Docker (los de Postgres se saltan)
 make test-integration   # todos los tests, incluidos los de Postgres (levanta el Postgres de compose)
+make vulncheck          # las dependencias y la librería estándar contra la base de vulnerabilidades de Go
 ```
 
-El núcleo se prueba con dobles en memoria, y el repositorio contra un Postgres real, incluida la concurrencia (`SKIP LOCKED` y la misma clave en paralelo). El CI corre todos los tests en cada PR, con Postgres como servicio, así que ninguno se salta.
+El núcleo se prueba con dobles en memoria, y el repositorio contra un Postgres real, incluida la concurrencia (`SKIP LOCKED` y la misma clave en paralelo). El CI corre todos los tests en cada PR, con Postgres como servicio, así que ninguno se salta, y revisa las vulnerabilidades conocidas con `govulncheck`.
 
 ## Decisiones
 

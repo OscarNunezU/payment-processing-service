@@ -36,3 +36,5 @@ jobs:
         run: make vet
       - name: Test (including Postgres)
         run: make test
+      - name: Check known vulnerabilities
+        run: make vulncheck
