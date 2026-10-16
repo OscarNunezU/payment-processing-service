@@ -1,0 +1,42 @@
+.switcher {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.option {
+  display: inline-flex;
+  width: 30px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.option:hover {
+  color: var(--text);
+}
+
+.option[aria-checked="true"] {
+  background: var(--row-hover);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.option svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

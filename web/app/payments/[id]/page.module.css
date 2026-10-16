@@ -1,0 +1,179 @@
+.back {
+  display: inline-block;
+  margin: 8px 0 16px;
+  color: var(--text-3);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--text);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.summary,
+.history {
+  padding: 20px;
+}
+
+/* The timeline adapts to the card's width, not the screen's: the card is
+   narrow both on a phone and beside the summary on a small screen. */
+.history {
+  container-type: inline-size;
+}
+
+.amount {
+  margin: 12px 0 4px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.amount span {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.facts dt {
+  color: var(--text-3);
+}
+
+.facts dd {
+  overflow-wrap: anywhere;
+}
+
+.live {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--processing);
+}
+
+.historyTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 14px;
+}
+
+.timeline {
+  list-style: none;
+  padding: 0;
+  position: relative;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.event {
+  position: relative;
+  display: grid;
+  grid-template-columns: 96px auto 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 4px;
+  padding: 0 0 14px 24px;
+}
+
+.event:last-child {
+  padding-bottom: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chips:empty {
+  display: none;
+}
+
+/* Too narrow for the widest row ("intento 1" and "acquirer_unavailable"):
+   the chips go under the status. */
+@container (max-width: 440px) {
+  .event {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .chips {
+    grid-column: 2;
+  }
+}
+
+.dot {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+}
+
+.APPROVED {
+  background: var(--approved);
+}
+
+.DECLINED {
+  background: var(--declined);
+}
+
+.FAILED {
+  background: var(--failed);
+}
+
+.PROCESSING {
+  background: var(--processing);
+}
+
+.PENDING {
+  background: var(--text-3);
+}
+
+.time {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.eventStatus {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.chip {
+  font-size: 11px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 6px;
+}
+
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
