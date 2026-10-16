@@ -30,7 +30,7 @@ El enunciado pide considerar que el adquirente responda con errores temporales. 
 **Negativas**
 - Un pago puede tardar unos 6 s más, más la duración de cada intento, en llegar a su estado final.
 - Si ningún intento obtiene respuesta, el pago queda `FAILED acquirer_unavailable`, aunque el adquirente pudo haber aprobado alguno. En producción eso se resuelve conciliando con el adquirente o anulando el cobro.
-- Una caída larga del adquirente agota en pocos segundos los intentos de los pagos en curso.
+- Una caída larga del adquirente agota en pocos segundos los intentos de los pagos en curso. La ADR 0010 lo acota con un circuit breaker.
 
 ## Alternativas consideradas
 
