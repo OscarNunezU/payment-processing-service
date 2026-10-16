@@ -13,6 +13,8 @@ docker compose up --build
 curl -i localhost:8080/health   # 200 {"status":"ok"}
 ```
 
+La API queda en `localhost:8080` y el [front](#front) en [localhost:3000](http://localhost:3000).
+
 Crear un pago (responde `202` con la transacción en `PENDING` y el header `Location`):
 
 ```bash
@@ -47,6 +49,15 @@ El adquirente simulado decide según el número de tarjeta:
 | `4000000000000135` | aprueba, pero responde después del timeout: el reintento recibe la misma aprobación |
 | `4000000000000143` | el adquirente rechaza la request (`422`): `FAILED`, motivo `acquirer_rejected`, sin reintentos |
 
+### Front
+
+En [localhost:3000](http://localhost:3000) se ven los pagos, con los mismos filtros de la API, y el detalle de cada uno con su historia, que se actualiza sola mientras el pago está en vuelo. También hay un formulario para crear pagos de prueba con las tarjetas de arriba ([ADR 0011](docs/decisions/0011-front-con-nextjs.md)).
+
+<p>
+  <img src="docs/images/front-list.png" width="49%" alt="Listado de pagos con filtros por comercio y estado">
+  <img src="docs/images/front-detail.png" width="49%" alt="Detalle de un pago aprobado en el segundo intento, con su historia">
+</p>
+
 <details>
 <summary>Desarrollo local sin Docker para la API</summary>
 
@@ -60,11 +71,27 @@ cd backend && go run ./cmd/server
 
 </details>
 
+<details>
+<summary>Desarrollo local sin Docker para el front</summary>
+
+Requisito: Node 22.18 o superior (la versión exacta está en `web/.nvmrc`).
+
+```bash
+docker compose up -d api   # o la API local de arriba
+cd web
+npm ci
+npm run dev                # localhost:3000; usa API_URL, por defecto http://localhost:8080
+```
+
+</details>
+
 ## Arquitectura
 
 ```mermaid
 flowchart LR
     merchant(["Comercio"])
+    browser(["Navegador"])
+    web["Front Next.js"]
     subgraph service["Payment Processing Service: un proceso Go"]
         api["API HTTP"]
         worker["Worker"]
@@ -77,6 +104,8 @@ flowchart LR
     acquirer(["Adquirente simulado"])
 
     merchant -- "POST / GET" --> api
+    browser --> web
+    web -- "POST / GET" --> api
     api --> core
     worker --> core
     core --> repo
@@ -93,6 +122,7 @@ flowchart LR
 - **PostgreSQL** (`internal/adapters/postgres`): `transactions` guarda el estado de cada pago y es, a la vez, la cola del worker; `transaction_events` guarda su historia.
 - **Vault** (`internal/adapters/vault`): cifra la tarjeta con AES-256-GCM mientras espera al worker. Se borra al llegar a un estado final.
 - **Adquirente simulado** (`cmd/acquirer-mock`): otro servicio. Decide por número de tarjeta y recuerda cada respuesta por `Idempotency-Key`.
+- **Front** (`web`): Next.js. Sus páginas consultan la API desde el servidor de Next, así que el navegador nunca habla con la API ([ADR 0011](docs/decisions/0011-front-con-nextjs.md)).
 
 Es una arquitectura hexagonal compacta: el núcleo en `internal/core` y los adaptadores en `internal/adapters` ([ADR 0003](docs/decisions/0003-arquitectura-hexagonal-compacta.md)).
 
@@ -219,6 +249,8 @@ Leí el problema como tres capas y lo construí en ese orden, un PR por hito:
 2. **Lo que hace confiable un pago**: idempotencia, para que un reintento del comercio nunca cobre dos veces, y trazabilidad, para saber qué le pasó a cada pago.
 3. **La resiliencia frente al adquirente**: reintentos con backoff, circuit breaker y vencimiento de los pagos que nunca se enviaron.
 
+Al final sumé el front, opcional en el enunciado, para ver cada pago y su historia sin `curl`.
+
 Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el reverso por timeout, la conciliación con el adquirente, la cancelación de pagos y el uso de varios adquirentes. Están en [Limitaciones y evolución](#limitaciones-y-evolución), con cómo evolucionaría cada uno.
 
 ## Supuestos
@@ -226,6 +258,7 @@ Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el 
 - Los montos son enteros en la unidad mínima de la moneda: CLP no tiene decimales y USD va en centavos ([ADR 0004](docs/decisions/0004-montos-en-enteros.md)).
 - Las monedas son CLP y USD, con un monto máximo por moneda configurable (`MAX_AMOUNT_CLP` y `MAX_AMOUNT_USD`). En producción vendría del contrato de cada comercio.
 - Un gateway delante del servicio autentica a los comercios, así que el `merchant_id` del body se toma como confiable.
+- El front es una consola interna, sin login: muestra los pagos de todos los comercios, como `GET /payments`.
 - Hay un solo adquirente. Responde por HTTP y JSON, y es idempotente por `Idempotency-Key`, como el simulado.
 - La tarjeta se guarda cifrada solo mientras espera al worker. Un sistema real delegaría los datos de tarjeta en un servicio certificado PCI DSS, con tokenización.
 - Los valores de resiliencia (3 intentos con base de 2 s, un breaker de 5 fallas por 30 s y el vencimiento a los 2 minutos) son supuestos razonados en las ADR 0009 y 0010. Se ajustarían con datos reales del adquirente y del tráfico.
@@ -252,9 +285,10 @@ Dejé fuera, a propósito, la autenticación de los comercios, los webhooks, el 
 make ci                 # formato, vet y tests con -race; sin Docker (los de Postgres se saltan)
 make test-integration   # todos los tests, incluidos los de Postgres (levanta el Postgres de compose)
 make vulncheck          # las dependencias y la librería estándar contra la base de vulnerabilidades de Go
+cd web && npm test      # la lógica del front: formatos de montos y fechas, y estados
 ```
 
-El núcleo se prueba con dobles en memoria, y el repositorio contra un Postgres real, incluida la concurrencia (`SKIP LOCKED` y la misma clave en paralelo). El CI corre todos los tests en cada PR, con Postgres como servicio, así que ninguno se salta, y revisa las vulnerabilidades conocidas con `govulncheck`.
+El núcleo se prueba con dobles en memoria, y el repositorio contra un Postgres real, incluida la concurrencia (`SKIP LOCKED` y la misma clave en paralelo). El CI corre todos los tests en cada PR, con Postgres como servicio, así que ninguno se salta, y revisa las vulnerabilidades conocidas con `govulncheck`. Para el front corre los tests, el build, que chequea los tipos, y `npm audit`.
 
 ## Decisiones
 
@@ -270,6 +304,7 @@ El núcleo se prueba con dobles en memoria, y el repositorio contra un Postgres 
 | [0008](docs/decisions/0008-trazabilidad-con-eventos.md) | Trazabilidad con una tabla de eventos escrita junto con cada cambio |
 | [0009](docs/decisions/0009-reintentos-de-errores-temporales.md) | Reintentos de errores temporales del adquirente, con backoff y jitter |
 | [0010](docs/decisions/0010-breaker-y-vencimiento.md) | Circuit breaker ante un adquirente caído y vencimiento de los pagos no enviados |
+| [0011](docs/decisions/0011-front-con-nextjs.md) | Front con Next.js que consulta la API desde su servidor |
 
 ## Uso de IA
 
@@ -279,7 +314,9 @@ Usé Claude (Claude Code) como agente durante todo el desafío, con reglas de tr
 - **Qué hice yo**: definí el alcance y las prioridades, propuse o elegí cada diseño antes de que se escribiera el código y cuestioné cada propuesta hasta que estuviera justificada. Nada entró al repositorio sin pasar por mí: los commits, los PR y los merges los hice yo.
 - **Cómo trabajamos**: el diseño de cada hito se confirmaba antes de implementarlo; antes de cada commit había una revisión previa obligatoria (tests, CI local y el contraste del código con las reglas de negocio, los comentarios y las ADR), y cada commit es un comportamiento.
 
-Esa revisión previa encontró errores de la propia IA antes de que llegaran a un commit: un circuit breaker que no se cerraba con una respuesta del adquirente, como decía su comentario; un test que no probaba lo que decía, e imprecisiones en la documentación.
+Esa revisión previa encontró errores de la propia IA antes de que llegaran a un commit: un circuit breaker que no se cerraba con una respuesta del adquirente, como decía su comentario; un test que no probaba lo que decía; un formulario del front que perdía lo enviado al mostrar un error; un botón "Reintentar" que no volvía a consultar la API, e imprecisiones en la documentación.
+
+No todos los encontró la revisión previa: probando el front yo mismo, vi que los filtros del listado no se aplicaban. Las pruebas de la IA abrían la URL ya filtrada y nunca usaban el formulario.
 
 Algunas decisiones que cambiaron por mi criterio:
 
@@ -289,4 +326,5 @@ Algunas decisiones que cambiaron por mi criterio:
 - Después de preguntar varias veces si un cambio estaba verificado, exigí la revisión previa antes de cada commit.
 - Al preguntar cómo se hace en la industria, el vencimiento de los pagos no enviados bajó de 10 a 2 minutos.
 - Pedí justificar la idempotencia con la práctica de la industria y no solo con una medición, y la ADR 0007 se reforzó.
+- Pedí analizar si el front debía usar Next.js 15 o 16: la 15 deja de tener soporte el 21 de octubre de 2026, y el front pasó a la 16.
 - Reduje la cantidad de commits y de comentarios del código cuando me parecieron excesivos.
