@@ -90,3 +90,4 @@ El CI corre los dos: levanta un Postgres como servicio, así que ningún test se
 | [0006](docs/decisions/0006-estrategia-de-tests.md) | Tests con la librería estándar y Postgres real |
 | [0007](docs/decisions/0007-idempotencia-por-comercio.md) | Idempotencia por comercio con el header `Idempotency-Key` |
 | [0008](docs/decisions/0008-trazabilidad-con-eventos.md) | Trazabilidad con una tabla de eventos escrita junto con cada cambio |
+| [0009](docs/decisions/0009-reintentos-de-errores-temporales.md) | Reintentos de errores temporales del adquirente, con backoff y jitter |
