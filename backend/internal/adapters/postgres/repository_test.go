@@ -75,11 +75,11 @@ func mustClaim(t *testing.T, repo *Repository, lease time.Duration) payment.Tran
 	return claimed
 }
 
-// emptyQueue removes every transaction: the queue is shared by all merchants,
-// so the claim tests need it to themselves.
+// emptyQueue removes every transaction and its history: the queue is shared by
+// all merchants, so the claim tests need it to themselves.
 func emptyQueue(t *testing.T, repo *Repository) {
 	t.Helper()
-	if _, err := repo.db.Exec(context.Background(), `TRUNCATE transactions`); err != nil {
+	if _, err := repo.db.Exec(context.Background(), `TRUNCATE transactions, transaction_events`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 }
@@ -314,5 +314,60 @@ func TestConcurrentCreatesWithTheSameKeyStoreOnePayment(t *testing.T) {
 	list, err := repo.List(context.Background(), payment.ListFilter{MerchantID: txn.MerchantID, Limit: 50})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("%d payments stored for the merchant, %v; want exactly 1", len(list), err)
+	}
+	if events, err := repo.Events(context.Background(), list[0].ID); err != nil || len(events) != 1 {
+		t.Fatalf("Events() = %+v, %v; want the single PENDING event: the creates that lost record nothing", events, err)
+	}
+}
+
+func TestEveryChangeIsRecordedAsAnEvent(t *testing.T) {
+	repo := testRepository(t)
+	emptyQueue(t, repo)
+	ctx := context.Background()
+	created := mustCreate(t, repo, newTransaction(uniqueMerchant(), payment.StatusPending))
+	mustClaim(t, repo, 0) // a worker takes it and dies: its lease ends at once
+	mustClaim(t, repo, time.Minute)
+	declined := payment.Outcome{Status: payment.StatusDeclined, Reason: "card_declined"}
+	if err := repo.Finish(ctx, created.ID, declined); err != nil {
+		t.Fatalf("Finish() = %v", err)
+	}
+
+	events, err := repo.Events(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Events() = %v", err)
+	}
+	want := []payment.Event{
+		{Status: payment.StatusPending, Attempt: 0},
+		{Status: payment.StatusProcessing, Attempt: 1},
+		{Status: payment.StatusProcessing, Attempt: 2},
+		{Status: payment.StatusDeclined, Attempt: 2, Reason: "card_declined"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("got %d events %+v, want %d", len(events), events, len(want))
+	}
+	for i, e := range events {
+		if e.Status != want[i].Status || e.Attempt != want[i].Attempt || e.Reason != want[i].Reason || e.CreatedAt.IsZero() {
+			t.Errorf("event %d = %+v, want %+v with its time", i, e, want[i])
+		}
+	}
+}
+
+func TestAChangeThatDoesNotHappenRecordsNoEvent(t *testing.T) {
+	repo := testRepository(t)
+	ctx := context.Background()
+	txn := newTransaction(uniqueMerchant(), payment.StatusPending)
+	created := mustCreate(t, repo, txn)
+
+	if _, isNew, err := repo.Create(ctx, txn); err != nil || isNew {
+		t.Fatalf("replay Create() = %v, created %v; want the existing payment", err, isNew)
+	}
+	err := repo.Finish(ctx, created.ID, payment.Outcome{Status: payment.StatusApproved})
+	if !errors.Is(err, payment.ErrNotProcessing) {
+		t.Fatalf("Finish() on a PENDING payment = %v, want ErrNotProcessing", err)
+	}
+
+	events, err := repo.Events(ctx, created.ID)
+	if err != nil || len(events) != 1 || events[0].Status != payment.StatusPending {
+		t.Fatalf("Events() = %+v, %v; want only the PENDING event", events, err)
 	}
 }

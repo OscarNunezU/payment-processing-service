@@ -23,6 +23,7 @@ type Payments interface {
 	Create(ctx context.Context, p payment.NewPayment) (txn payment.Transaction, replayed bool, err error)
 	Get(ctx context.Context, id string) (payment.Transaction, error)
 	List(ctx context.Context, filter payment.ListFilter) ([]payment.Transaction, error)
+	Events(ctx context.Context, id string) ([]payment.Event, error)
 }
 
 type Handler struct {
@@ -113,6 +114,15 @@ func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toPaymentResponse(txn))
+}
+
+func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := h.payments.Events(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toEventsResponse(events))
 }
 
 func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {

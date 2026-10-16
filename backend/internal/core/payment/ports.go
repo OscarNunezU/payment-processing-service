@@ -27,6 +27,11 @@ type Repository interface {
 	// data. It rejects a status that is not final, and returns
 	// ErrNotProcessing if the payment is not PROCESSING.
 	Finish(ctx context.Context, id string, outcome Outcome) error
+
+	// Events returns the payment's history, oldest first. Create, ClaimNext
+	// and Finish record an event in the same write as each change, so the
+	// history never misses one.
+	Events(ctx context.Context, transactionID string) ([]Event, error)
 }
 
 // CardVault encrypts card details before they are stored, and decrypts them

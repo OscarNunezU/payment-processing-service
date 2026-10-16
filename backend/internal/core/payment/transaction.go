@@ -26,3 +26,12 @@ type Outcome struct {
 	Reason            string
 	AuthorizationCode string
 }
+
+// Event is one change in a payment's history, with the status the payment was
+// left in.
+type Event struct {
+	Status    Status
+	Attempt   int
+	Reason    string
+	CreatedAt time.Time
+}

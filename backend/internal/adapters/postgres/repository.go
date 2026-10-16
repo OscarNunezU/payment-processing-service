@@ -28,17 +28,28 @@ const columns = `id::text, merchant_id, COALESCE(idempotency_key, ''), COALESCE(
 	amount, currency, status, card_last4, card_data, COALESCE(reason, ''), COALESCE(authorization_code, ''),
 	attempts, available_at, created_at, updated_at`
 
+// recordEvent completes a WITH clause whose first statement, changed, returns
+// the rows it modified: each one gets an event in the same statement as the
+// change, so neither can be stored without the other.
+const recordEvent = `event AS (
+		INSERT INTO transaction_events (transaction_id, status, attempt, reason)
+		SELECT id, status, attempts, reason FROM changed
+	)`
+
 // Create relies on the unique index over (merchant_id, idempotency_key): if the
 // key is taken, nothing is inserted and the payment that holds it is returned.
 // When two requests with the same key race, the second waits for the first to
 // commit and ends the same way.
 func (r *Repository) Create(ctx context.Context, txn payment.Transaction) (payment.Transaction, bool, error) {
 	stored, err := scanTransaction(r.db.QueryRow(ctx, `
-		INSERT INTO transactions
-		    (merchant_id, idempotency_key, request_fingerprint, amount, currency, status, card_last4, card_data)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
-		RETURNING `+columns,
+		WITH changed AS (
+			INSERT INTO transactions
+			    (merchant_id, idempotency_key, request_fingerprint, amount, currency, status, card_last4, card_data)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+			RETURNING *
+		), `+recordEvent+`
+		SELECT `+columns+` FROM changed`,
 		txn.MerchantID, txn.IdempotencyKey, txn.RequestFingerprint, txn.Amount, txn.Currency,
 		string(txn.Status), txn.CardLast4, txn.CardData,
 	))
@@ -124,19 +135,22 @@ func (r *Repository) List(ctx context.Context, filter payment.ListFilter) ([]pay
 // is computed with the database clock, the same one that decides when it expires.
 func (r *Repository) ClaimNext(ctx context.Context, lease time.Duration) (payment.Transaction, bool, error) {
 	txn, err := scanTransaction(r.db.QueryRow(ctx, `
-		UPDATE transactions
-		SET status = 'PROCESSING',
-		    attempts = attempts + 1,
-		    available_at = now() + make_interval(secs => $1),
-		    updated_at = now()
-		WHERE id = (
-			SELECT id FROM transactions
-			WHERE status IN ('PENDING', 'PROCESSING') AND available_at <= now()
-			ORDER BY available_at
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING `+columns,
+		WITH changed AS (
+			UPDATE transactions
+			SET status = 'PROCESSING',
+			    attempts = attempts + 1,
+			    available_at = now() + make_interval(secs => $1),
+			    updated_at = now()
+			WHERE id = (
+				SELECT id FROM transactions
+				WHERE status IN ('PENDING', 'PROCESSING') AND available_at <= now()
+				ORDER BY available_at
+				LIMIT 1
+				FOR UPDATE SKIP LOCKED
+			)
+			RETURNING *
+		), `+recordEvent+`
+		SELECT `+columns+` FROM changed`,
 		lease.Seconds(),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -154,23 +168,56 @@ func (r *Repository) Finish(ctx context.Context, id string, outcome payment.Outc
 	if !outcome.Status.IsFinal() {
 		return fmt.Errorf("finish %s: %s is not a final status", id, outcome.Status)
 	}
-	tag, err := r.db.Exec(ctx, `
-		UPDATE transactions
-		SET status = $2,
-		    reason = NULLIF($3, ''),
-		    authorization_code = NULLIF($4, ''),
-		    card_data = NULL,
-		    updated_at = now()
-		WHERE id = $1 AND status = 'PROCESSING'`,
+	var finished int
+	err := r.db.QueryRow(ctx, `
+		WITH changed AS (
+			UPDATE transactions
+			SET status = $2,
+			    reason = NULLIF($3, ''),
+			    authorization_code = NULLIF($4, ''),
+			    card_data = NULL,
+			    updated_at = now()
+			WHERE id = $1 AND status = 'PROCESSING'
+			RETURNING *
+		), `+recordEvent+`
+		SELECT count(*) FROM changed`,
 		id, string(outcome.Status), outcome.Reason, outcome.AuthorizationCode,
-	)
+	).Scan(&finished)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if finished == 0 {
 		return payment.ErrNotProcessing
 	}
 	return nil
+}
+
+func (r *Repository) Events(ctx context.Context, transactionID string) ([]payment.Event, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT status, attempt, COALESCE(reason, ''), created_at
+		FROM transaction_events
+		WHERE transaction_id = $1
+		ORDER BY id`,
+		transactionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []payment.Event{}
+	for rows.Next() {
+		var (
+			e      payment.Event
+			status string
+		)
+		if err := rows.Scan(&status, &e.Attempt, &e.Reason, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Status = payment.Status(status)
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 func scanTransaction(row pgx.Row) (payment.Transaction, error) {

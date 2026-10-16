@@ -198,6 +198,19 @@ func TestGetReturnsTheStoredPaymentOrNotFound(t *testing.T) {
 	}
 }
 
+func TestEventsReturnsTheHistoryOrNotFound(t *testing.T) {
+	repo := &fakeRepository{events: []Event{{Status: StatusPending}, {Status: StatusProcessing, Attempt: 1}}}
+	s := newTestService(repo, fakeVault{})
+	created := mustCreate(t, s, validPayment())
+
+	if got, err := s.Events(context.Background(), created.ID); err != nil || len(got) != 2 {
+		t.Fatalf("Events(%s) = %+v, %v; want its 2 events", created.ID, got, err)
+	}
+	if _, err := s.Events(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Events(missing) = %v, want ErrNotFound", err)
+	}
+}
+
 func TestListAppliesTheDefaultAndMaximumLimit(t *testing.T) {
 	tests := []struct {
 		asked, want int

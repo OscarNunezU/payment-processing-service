@@ -77,3 +77,28 @@ func toPaymentResponse(txn payment.Transaction) paymentResponse {
 		UpdatedAt:         txn.UpdatedAt,
 	}
 }
+
+// eventsResponse is a payment's history, oldest first.
+type eventsResponse struct {
+	Events []eventResponse `json:"events"`
+}
+
+type eventResponse struct {
+	Status    string    `json:"status"`
+	Attempt   int       `json:"attempt,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func toEventsResponse(events []payment.Event) eventsResponse {
+	resp := eventsResponse{Events: make([]eventResponse, len(events))}
+	for i, e := range events {
+		resp.Events[i] = eventResponse{
+			Status:    string(e.Status),
+			Attempt:   e.Attempt,
+			Reason:    e.Reason,
+			CreatedAt: e.CreatedAt,
+		}
+	}
+	return resp
+}

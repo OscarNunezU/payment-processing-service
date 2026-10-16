@@ -20,6 +20,7 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 type fakePayments struct {
 	txn        payment.Transaction
 	list       []payment.Transaction
+	events     []payment.Event
 	replayed   bool
 	err        error
 	gotFilter  *payment.ListFilter // when set, List records the filter it received
@@ -42,6 +43,10 @@ func (f fakePayments) List(_ context.Context, filter payment.ListFilter) ([]paym
 		*f.gotFilter = filter
 	}
 	return f.list, f.err
+}
+
+func (f fakePayments) Events(context.Context, string) ([]payment.Event, error) {
+	return f.events, f.err
 }
 
 func get(payments fakePayments, target string) *httptest.ResponseRecorder {
@@ -67,6 +72,41 @@ func TestGetPayment(t *testing.T) {
 	rec = get(fakePayments{err: payment.ErrNotFound}, "/payments/missing")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET /payments/missing = %d, want 404", rec.Code)
+	}
+}
+
+func TestListEvents(t *testing.T) {
+	events := []payment.Event{
+		{Status: payment.StatusPending},
+		{Status: payment.StatusProcessing, Attempt: 1},
+		{Status: payment.StatusDeclined, Attempt: 1, Reason: "card_declined"},
+	}
+
+	rec := get(fakePayments{events: events}, "/payments/txn-1/events")
+	var got struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || len(got.Events) != 3 {
+		t.Fatalf("GET /payments/txn-1/events = %d %s, want 200 with the 3 events", rec.Code, rec.Body)
+	}
+	if _, ok := got.Events[0]["attempt"]; ok {
+		t.Errorf("the PENDING event = %v, want no attempt: none has started", got.Events[0])
+	}
+	if got.Events[2]["status"] != "DECLINED" || got.Events[2]["reason"] != "card_declined" {
+		t.Errorf("the last event = %v, want DECLINED with its reason", got.Events[2])
+	}
+
+	rec = get(fakePayments{err: payment.ErrNotFound}, "/payments/missing/events")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /payments/missing/events = %d, want 404", rec.Code)
+	}
+}
+
+func TestListEventsAnswersAnEmptyHistoryAsAnArray(t *testing.T) {
+	rec := get(fakePayments{}, "/payments/txn-1/events")
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"events":[]`) {
+		t.Fatalf("GET /payments/txn-1/events = %d %s, want 200 with \"events\":[]", rec.Code, rec.Body)
 	}
 }
 

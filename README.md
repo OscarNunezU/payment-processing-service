@@ -30,6 +30,12 @@ curl -s localhost:8080/payments/<transaction_id>
 curl -s 'localhost:8080/payments?merchant_id=merchant-001&status=APPROVED&limit=10'
 ```
 
+Cada cambio del pago queda en su historia, con el intento y el motivo:
+
+```bash
+curl -s localhost:8080/payments/<transaction_id>/events
+```
+
 ### Idempotencia
 
 Cada `POST /payments` lleva el header `Idempotency-Key`, elegido por el comercio (por ejemplo, el id de su orden). Una clave identifica un solo pago por comercio:
@@ -83,3 +89,4 @@ El CI corre los dos: levanta un Postgres como servicio, así que ningún test se
 | [0005](docs/decisions/0005-procesamiento-asincrono.md) | Procesamiento asíncrono con Postgres como cola |
 | [0006](docs/decisions/0006-estrategia-de-tests.md) | Tests con la librería estándar y Postgres real |
 | [0007](docs/decisions/0007-idempotencia-por-comercio.md) | Idempotencia por comercio con el header `Idempotency-Key` |
+| [0008](docs/decisions/0008-trazabilidad-con-eventos.md) | Trazabilidad con una tabla de eventos escrita junto con cada cambio |

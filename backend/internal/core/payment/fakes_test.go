@@ -12,9 +12,10 @@ import (
 // without a database.
 type fakeRepository struct {
 	stored     []Transaction
-	err        error // returned by Create
-	finishErr  error // returned by Finish
-	findErr    error // returned by FindByIdempotencyKey
+	err        error   // returned by Create
+	finishErr  error   // returned by Finish
+	findErr    error   // returned by FindByIdempotencyKey
+	events     []Event // returned by Events, whatever the payment
 	lastFilter ListFilter
 }
 
@@ -94,6 +95,10 @@ func (f *fakeRepository) Finish(_ context.Context, id string, outcome Outcome) e
 		}
 	}
 	return ErrNotProcessing
+}
+
+func (f *fakeRepository) Events(context.Context, string) ([]Event, error) {
+	return f.events, nil
 }
 
 // fakeVault "seals" by reversing the bytes: enough to tell sealed data from
