@@ -235,7 +235,7 @@ Reintentar con la misma clave devuelve el mismo resultado, aunque sea `FAILED`; 
 
 ### Errores temporales del adquirente
 
-Ante un timeout, un `5xx`, un `408` o `429`, una conexión caída o una respuesta ilegible, el pago tiene hasta 3 intentos, con esperas de 1-2 s y luego 2-4 s entre ellos. Reintentar es seguro porque cada llamada lleva el id de la transacción como `Idempotency-Key`, y cada intento queda en la historia del pago. Detalle en la [ADR 0009](docs/decisions/0009-reintentos-de-errores-temporales.md).
+Ante un timeout, un `5xx`, un `408` o `429`, una conexión caída o una respuesta ilegible o incompleta, el pago tiene hasta 3 intentos, con esperas de 1-2 s y luego 2-4 s entre ellos. Reintentar es seguro porque cada llamada lleva el id de la transacción como `Idempotency-Key`, y cada intento queda en la historia del pago. Detalle en la [ADR 0009](docs/decisions/0009-reintentos-de-errores-temporales.md).
 
 ### Caída larga del adquirente
 

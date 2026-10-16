@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,7 +47,7 @@ type cardPayload struct {
 }
 
 type authorizeResponse struct {
-	Approved          bool   `json:"approved"`
+	Approved          *bool  `json:"approved"`
 	AuthorizationCode string `json:"authorization_code"`
 	DeclineReason     string `json:"decline_reason"`
 }
@@ -95,8 +96,14 @@ func (c *Client) Authorize(ctx context.Context, req payment.AuthorizationRequest
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
 		return payment.AuthorizationResult{}, fmt.Errorf("decode acquirer response: %w", err)
 	}
+	// An answer says what was decided, with the code of an approval or the
+	// reason of a decline. Anything less is no answer: the payment is retried,
+	// not declined on the issuer's behalf.
+	if out.Approved == nil || (*out.Approved && out.AuthorizationCode == "") || (!*out.Approved && out.DeclineReason == "") {
+		return payment.AuthorizationResult{}, errors.New("acquirer answer is incomplete")
+	}
 	return payment.AuthorizationResult{
-		Approved:          out.Approved,
+		Approved:          *out.Approved,
 		AuthorizationCode: out.AuthorizationCode,
 		DeclineReason:     out.DeclineReason,
 	}, nil
