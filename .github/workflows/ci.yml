@@ -38,3 +38,26 @@ jobs:
         run: make test
       - name: Check known vulnerabilities
         run: make vulncheck
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build (includes the type check)
+        run: npm run build
+      - name: Check known vulnerabilities
+        run: npm audit --omit=dev

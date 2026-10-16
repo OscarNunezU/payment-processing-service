@@ -1,0 +1,51 @@
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.field input {
+  width: 200px;
+}
+
+.field select {
+  width: 160px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.clear {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.clear:hover {
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .field,
+  .field input,
+  .field select {
+    width: 100%;
+  }
+
+  .filters > .field {
+    flex: 1 1 100%;
+  }
+}

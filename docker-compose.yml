@@ -46,5 +46,16 @@ services:
     # flight get up to 15s to finish, so give it a little more.
     stop_grace_period: 20s
 
+  web:
+    build: ./web
+    environment:
+      # Only the Next.js server calls the API, over the compose network.
+      API_URL: http://api:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
 volumes:
   postgres-data:

@@ -1,0 +1,85 @@
+.heading {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 18px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table tbody tr {
+  transition: background 150ms ease;
+}
+
+.table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.id {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.id:hover {
+  text-decoration: underline;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reason {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.empty {
+  padding: 40px 24px;
+  text-align: center;
+  display: grid;
+  gap: 6px;
+}
+
+.emptyTitle {
+  font-weight: 500;
+}
+
+/* On a phone the list keeps what matters: the payment, its amount and its
+   status. The rest is on the payment's page. */
+@media (max-width: 640px) {
+  .wide {
+    display: none;
+  }
+}
