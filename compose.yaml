@@ -112,8 +112,11 @@ services:
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
+      # Valkey is started, never waited for: without it, the API runs in
+      # degraded mode (RFC 0001, section 10).
       valkey-risk:
-        condition: service_healthy
+        condition: service_started
+        required: false
       otel-collector:
         condition: service_started
     healthcheck:
