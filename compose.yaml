@@ -1,0 +1,134 @@
+# Local environment: `docker compose up --build --wait` starts everything and
+# waits until it is healthy. Passwords here are for local development only.
+name: payments-platform
+
+x-go-service: &go-service
+  build: .
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/local/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Over TCP, not the Unix socket: while the image runs its init scripts, a
+      # temporary server answers on the socket only, and a socket check would
+      # pass before the real server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U platform"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.1.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # A single broker locally; milestone 4 runs three.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created on purpose, with their partitions and retention.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "9094:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  valkey-risk:
+    image: valkey/valkey:8.1.4-alpine
+    # Risk counters are short-lived; nothing here needs to survive a restart.
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  valkey-vault:
+    image: valkey/valkey:8.1.4-alpine
+    # The vault keeps CVVs here for 10 minutes at most: they must never reach a disk.
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - "16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.137.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/local/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+    depends_on:
+      - jaeger
+
+  migrate-payments:
+    <<: *go-service
+    restart: "no"
+    command: ["/migrate", "payments", "up"]
+    environment:
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  payments-api:
+    <<: *go-service
+    command: ["/payments-api"]
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+      VALKEY_RISK_ADDR: valkey-risk:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate-payments:
+        condition: service_completed_successfully
+      # Valkey is started, never waited for: without it, the API runs in
+      # degraded mode (RFC 0001, section 10).
+      valkey-risk:
+        condition: service_started
+        required: false
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://localhost:8080/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # In-flight requests get 20 s to finish, plus a margin (RFC 0001, section 5.2).
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:
