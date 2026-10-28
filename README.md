@@ -9,6 +9,7 @@ A payments platform for merchants: it authorizes and captures card payments thro
 - [PRD](docs/prd.md): what the platform does and why.
 - [Architecture RFC](docs/rfc/0001-architecture.md): how it is built, and the plan for milestone 1.
 - [Decisions](docs/decisions/): one ADR per significant decision.
+- [TLA+ model](spec/authorization/Authorization.tla) of the authorization protocol, checked by TLC in CI.
 
 ## Run it locally
 
@@ -35,6 +36,7 @@ curl -s localhost:8080/readyz      # {"status":"ready","checks":{"postgres":"ok"
 make test              # unit tests, no Docker needed
 make test-integration  # every test, with Postgres and Valkey in containers
 make ci                # formatting, linters, every test and govulncheck, as in CI
+make spec              # the TLA+ model of the authorization protocol, and its mutations (needs Java)
 ```
 
 ## Milestones

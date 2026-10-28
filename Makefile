@@ -3,12 +3,15 @@
 GO_TOOLCHAIN          := go1.27.3
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION   := v1.9.0
+TLA_TOOLS_VERSION     := v1.7.4
+TLA_TOOLS_SHA256      := 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 
 BIN           := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
 GOVULNCHECK   := $(BIN)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
+TLA_TOOLS     := $(BIN)/tla2tools-$(TLA_TOOLS_VERSION).jar
 
-.PHONY: help fmt lint test test-integration vulncheck ci up down logs
+.PHONY: help fmt lint test test-integration vulncheck spec ci up down logs
 
 help: ## Show the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -29,6 +32,9 @@ test-integration: ## Run every test, starting Postgres and Valkey in containers
 vulncheck: $(GOVULNCHECK) ## Check dependencies and the standard library for known vulnerabilities
 	$(GOVULNCHECK) ./...
 
+spec: $(TLA_TOOLS) ## Check the TLA+ model of the authorization protocol, and that every mutation is caught
+	spec/check.sh $(TLA_TOOLS)
+
 ci: fmt lint test-integration vulncheck ## Run what CI runs
 
 up: ## Start the local environment and wait until it is healthy
@@ -47,3 +53,10 @@ $(GOLANGCI_LINT):
 
 $(GOVULNCHECK):
 	GOBIN=$(dir $@) GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+# The official TLA+ tools, checked against a known hash before they run.
+$(TLA_TOOLS):
+	@mkdir -p $(BIN)
+	curl -fsSL -o $@.download https://github.com/tlaplus/tlaplus/releases/download/$(TLA_TOOLS_VERSION)/tla2tools.jar
+	echo "$(TLA_TOOLS_SHA256)  $@.download" | shasum -a 256 -c -
+	mv $@.download $@

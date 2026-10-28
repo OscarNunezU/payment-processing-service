@@ -111,13 +111,15 @@ Postgres sessions use a 2 s statement timeout and a 5 s idle-in-transaction time
 | Timeout, connection reset after sending, or an unreadable answer | Uncertain | Sends an inquiry by key. If it is still uncertain, the operation becomes `UNKNOWN` and recovery takes it. |
 | The instance died | Uncertain, found when the lease expires | Recovery sends an inquiry by key. |
 
-Recovery runs in `payments-worker`. Every 2 s it claims operations in `SENDING` or `UNKNOWN` whose lease expired, using `FOR UPDATE SKIP LOCKED`, renews the lease and asks the same acquirer:
+Recovery runs in `payments-worker`. Every 2 s it claims operations in `SENDING`, `UNKNOWN` or `REVERSING` whose lease expired, using `FOR UPDATE SKIP LOCKED`, renews the lease and asks the same acquirer:
 
 - **Approved or declined:** records that result: `AUTHORIZED`, `CAPTURED` for a sale, or `DECLINED`.
-- **Not found:** the request never arrived. If the card data is still in the vault, recovery resends the authorization with the same key; otherwise the payment ends `FAILED`, since nothing reached the acquirer.
-- **No answer:** it retries the inquiry with backoff. After three failed inquiries, it sends reversals until one is confirmed, and the payment ends `FAILED` with reason `reversed`.
+- **Not found:** the request has not arrived, but it may still be on its way. If the card data is still in the vault, recovery resends the authorization with the same key. Otherwise it reverses the operation, as below, so a late arrival cannot be approved.
+- **No answer:** it retries the inquiry with backoff. After three failed inquiries, it records the operation as `REVERSING`, and only then sends reversals until one is confirmed. The payment ends `FAILED` with reason `reversed`, or fails over (section 5.4).
 
 An operation that stays unresolved for more than 5 minutes raises an alert.
+
+**Leases and epochs.** A lease can expire while its holder is only slow, so two processes may work on the same operation at once. Each claim increments the operation's epoch, and every decision (`NOT_SENT`, `UNKNOWN`, a resend, `REVERSING`) is a conditional update on both the status and the epoch, so a process that lost its lease can no longer decide anything. An answer from the acquirer is a fact: whoever receives it records it, as long as the operation is still `SENDING` or `UNKNOWN`. A late approval that arrives after the decision to reverse is therefore not recorded as the outcome, and the reversal undoes it at the acquirer.
 
 ### 5.4 Failover (milestone 2)
 
@@ -130,7 +132,16 @@ Acquirer B speaks ISO 8583, which has no idempotency keys. Its simulator detects
 - **Capture and void** follow the same write-ahead pattern: an operation row first, then the call, then a conditional update. The payment row is locked during T1, and a unique index allows only one pending capture or void per payment, so a capture and a void can never race.
 - **Automatic void:** `payments-worker` sweeps every minute for payments that have been `AUTHORIZED` for 7 days and voids them with the same flow.
 
-### 5.6 Refunds (milestone 2)
+### 5.6 What the acquirers must guarantee
+
+The protocol relies on four promises from each acquirer. Both simulators keep them, and a real integration must guarantee them too:
+
+1. **One answer per key.** A request repeated with the same key gets the same answer, and never a second authorization.
+2. **Inquiry by key.** The acquirer can say whether it approved, declined or has not seen a key.
+3. **Reversal by key.** A reversal undoes an approval.
+4. **No approval after a reversal.** A reversal for a key the acquirer has not seen yet still marks that key, so a request with it that arrives later is declined. A real integration can get the same effect by rejecting requests older than the reversal.
+
+### 5.7 Refunds (milestone 2)
 
 `POST /v1/payments/{id}/refunds` locks the payment row and checks that the captured amount covers the refunds already succeeded or pending plus the new one. It inserts the refund as `PENDING` with its operation row and answers `202`. `payments-worker` claims pending refund operations from Postgres and calls the acquirer. Refunds therefore keep working when Kafka is down.
 
@@ -169,7 +180,7 @@ Concurrent duplicates wait on the primary key until the first transaction commit
 | `bin_ranges` | Brand, card type, issuer and country per BIN range |
 | `orders` | One row per merchant order, with its fixed amount and currency |
 | `payments` | The payment, its amounts, card summary (token, fingerprint, BIN, last 4, brand, type), installments, metadata and status |
-| `acquirer_operations` | Every acquirer call: kind, acquirer, attempt, status, lease, timings, latency and response code. Its id is the key sent to the acquirer. |
+| `acquirer_operations` | Every acquirer call: kind, acquirer, attempt, status (`SENDING`, `UNKNOWN`, `NOT_SENT`, `REVERSING`, `SUCCEEDED`, `DECLINED`, `REVERSED`), lease, epoch, timings, latency and response code. Its id is the key sent to the acquirer. |
 | `payment_events` | One row per status change |
 | `idempotency_keys` | Section 6 |
 | `risk_decisions` | Every risk decision with the rule that produced it |
@@ -185,10 +196,11 @@ CREATE UNIQUE INDEX payments_one_live_per_order
     WHERE status IN ('PENDING', 'PROCESSING', 'AUTHORIZED', 'CAPTURED',
                      'PARTIALLY_REFUNDED', 'REFUNDED');
 
--- INV01: a payment has at most one authorization that is uncertain or approved.
+-- INV01: a payment has at most one authorization that may be live:
+-- uncertain, being reversed, or approved.
 CREATE UNIQUE INDEX operations_one_live_authorization
     ON acquirer_operations (payment_id)
-    WHERE kind = 'authorize' AND status IN ('SENDING', 'UNKNOWN', 'SUCCEEDED');
+    WHERE kind = 'authorize' AND status IN ('SENDING', 'UNKNOWN', 'REVERSING', 'SUCCEEDED');
 
 -- A capture and a void can never run at the same time.
 CREATE UNIQUE INDEX operations_one_pending_capture_or_void
@@ -346,7 +358,7 @@ How each invariant is guaranteed and tested:
 
 | Invariant | Mechanism | Test |
 |---|---|---|
-| INV01 | One live payment per order and one live authorization per payment (indexes); inquiry and reversal before any failover | TLA+, property tests, chaos with failover |
+| INV01 | One live payment per order and one live authorization per payment (indexes); inquiry, then a recorded reversal, before any failover; decisions fenced by the lease epoch | TLA+, property tests, chaos with failover |
 | INV02 | Write-ahead operations, leases and recovery; alert on operations unresolved after 5 minutes | Killing instances under load |
 | INV03 | The response is sent only after the commit; the idempotency record stores it | The invariant checker compares what each client saw, the database and the simulators' books |
 | INV04 | Insert-only ledger tables and a deferred constraint that rejects unbalanced entries (milestone 2) | Property tests and a continuous check |
@@ -360,12 +372,12 @@ How each invariant is guaranteed and tested:
 
 ### 15.1 The TLA+ model
 
-The model covers one order, two acquirers, up to two attempts and up to two crashes. Requests and responses can be lost or delayed, instances can crash at any step, and recovery runs concurrently. TLC checks:
+The model lives in `spec/authorization` (ADR 0005). It covers one payment, two acquirers, up to two operations and one crash. The API and the recovery worker run at the same time, leases expire while their holder is still working, the card data can expire, and the network loses, delays and repeats messages. TLC checks:
 
-- **Safety:** an order never has two live authorizations (INV01), and whatever the merchant was told matches the acquirers' state (INV03).
-- **Liveness:** if the acquirer eventually answers, every payment reaches a final state (INV02).
+- **Safety:** a payment never has two live authorizations (INV01); the database and whatever the merchant was told match the acquirers' state (INV03); at most one operation may be live, as the unique index requires.
+- **Liveness:** if the acquirers eventually answer, every payment reaches a final state (INV02).
 
-As a check on the model itself, a version that fails over on a timeout must fail the safety property.
+Five mutations each switch off one safeguard, and TLC must find a counterexample for every one of them: failing over on a timeout, acquirers without tombstones (section 5.6, promise 4), a reversal sent before it is recorded, decisions without the lease epoch, and failing a payment when an inquiry says "not found" and there is no card data to resend.
 
 ## 16. Repository layout
 
@@ -375,7 +387,7 @@ One Go module, with one `main` per deployable:
 cmd/          payments-api, payments-worker, vault, relay, money, webhooks,
               acquirer-a, acquirer-b, bank, datagen
 internal/
-  payments/   domain, application and adapters (hexagonal, as in v1)
+  payments/   domain, use cases and adapters (ADR 0004)
   vault/
   money/
   webhooks/
@@ -384,10 +396,11 @@ internal/
 proto/        event contracts
 api/          OpenAPI specifications
 migrations/   one folder per database
-spec/         TLA+ models
+spec/         TLA+ models (ADR 0005)
 features/     acceptance scenarios (Gherkin)
 web/          portal, console and test checkout (Next.js)
-deploy/       Compose and, in milestone 4, Helm
+deploy/       configuration for the local environment and, in milestone 4, Helm
+compose.yaml  the local environment, at the root so `docker compose up` works
 tests/        end-to-end, load, chaos and the invariant checker
 docs/         PRD, RFCs, decisions (ADR) and runbooks
 ```

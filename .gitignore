@@ -17,6 +17,9 @@ out/
 .env.*
 !.env.example
 
+# Personal Claude Code settings
+.claude/settings.local.json
+
 # OS and editors
 .DS_Store
 .idea/
