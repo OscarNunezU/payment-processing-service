@@ -18,7 +18,10 @@ services:
       - postgres-data:/var/lib/postgresql
       - ./deploy/local/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U platform"]
+      # Over TCP, not the Unix socket: while the image runs its init scripts, a
+      # temporary server answers on the socket only, and a socket check would
+      # pass before the real server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U platform"]
       interval: 2s
       timeout: 3s
       retries: 20
