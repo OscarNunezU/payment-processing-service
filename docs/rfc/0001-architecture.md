@@ -68,7 +68,10 @@ Everything left of Postgres happens inside the merchant's request. Everything ri
 
 ### 5.1 The normal path
 
-1. **Checks, risk and limits.** `payments-api` authenticates the API key, checks that the merchant is active and that the amount is within its per-payment limit, and runs one Valkey script that updates and reads every risk counter and rate limit (section 10). If no acquirer can take the payment (circuit breakers open or caps reached), it answers `503` with `Retry-After` and creates nothing.
+1. **Checks, risk and limits.** `payments-api` authenticates the API key and checks that the merchant is active and that the amount is within its per-payment limit.
+   - If the idempotency key already exists, it answers from the idempotency record (section 6) and stops there. A retry of a finished payment gets its stored result even if no acquirer is available at that moment.
+   - Otherwise it runs one Valkey script that updates and reads every risk counter and rate limit (section 10). The script counts each payment once per idempotency key, so concurrent duplicates that arrive before T1 are not counted as new payments either.
+   - If no acquirer can take the payment (circuit breakers open or caps reached), it answers `503` with `Retry-After` and creates nothing.
 2. **Transaction T1.** In a single transaction:
    - insert the idempotency record (section 6);
    - insert the order if it is new, or check that its amount and currency match;
@@ -78,7 +81,7 @@ Everything left of Postgres happens inside the merchant's request. Everything ri
 
    If risk declined the payment, T1 moves it from `PENDING` to `DECLINED` instead, and nothing is sent.
 3. **The call.** `payments-api` asks the vault to forward the authorization. The vault adds the card data and calls the acquirer. No database connection is held while waiting.
-4. **Transaction T2.** A conditional update moves the operation from `SENDING` to its result and the payment from `PROCESSING` to `AUTHORIZED` or `DECLINED`. It inserts the event and the outbox row, and stores the final response in the idempotency record. If the conditional update finds that recovery already resolved the operation, the API answers with that result instead.
+4. **Transaction T2.** A conditional update moves the operation from `SENDING` to its result and the payment from `PROCESSING` to `AUTHORIZED`, to `CAPTURED` with its captured amount when the request was a sale, or to `DECLINED`. It inserts the event and the outbox row, and stores the final response in the idempotency record. If the conditional update finds that recovery already resolved the operation, the API answers with that result instead.
 5. **The response.** Only after T2 commits does the merchant receive `201` with the final state.
 
 A sale, and every debit or prepaid payment, sends the authorization with the capture flag and ends `CAPTURED` in the same request.
@@ -110,7 +113,7 @@ Postgres sessions use a 2 s statement timeout and a 5 s idle-in-transaction time
 
 Recovery runs in `payments-worker`. Every 2 s it claims operations in `SENDING` or `UNKNOWN` whose lease expired, using `FOR UPDATE SKIP LOCKED`, renews the lease and asks the same acquirer:
 
-- **Approved or declined:** records that result.
+- **Approved or declined:** records that result: `AUTHORIZED`, `CAPTURED` for a sale, or `DECLINED`.
 - **Not found:** the request never arrived. If the card data is still in the vault, recovery resends the authorization with the same key; otherwise the payment ends `FAILED`, since nothing reached the acquirer.
 - **No answer:** it retries the inquiry with backoff. After three failed inquiries, it sends reversals until one is confirmed, and the payment ends `FAILED` with reason `reversed`.
 
@@ -256,6 +259,7 @@ Events of the same payment are produced in separate transactions, one after the 
 ## 10. Risk and limits
 
 - **One round trip.** A Valkey Lua script atomically updates and reads every counter for the payment: per card fingerprint, per IP and per merchant. In the same call it checks the merchant's rate limit, the merchant's daily limit and the acquirer's transactions-per-second cap. The counters therefore include the payment being evaluated (FR42) and do not depend on Kafka.
+- **Once per payment.** The script receives the idempotency key and sets a marker for it with `SET NX`, which expires after 24 hours. It updates the velocity counters and the daily limit only when it sets the marker, so a retry never counts twice. After 24 hours, a retry no longer reaches the script: the idempotency record answers it first. The merchant's rate limit, instead, counts every request, retries included, because it protects the platform.
 - **Rules** come from configuration and run inside `payments-api`. Each decision is recorded in T1 with the rule that produced it.
 - **Blocklists** live in Postgres and are cached in memory, refreshed every 30 seconds.
 - **Daily limits** are released when a payment ends without an authorization.
