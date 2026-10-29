@@ -25,7 +25,8 @@ curl -s localhost:8080/readyz      # {"status":"ready","checks":{"acquirer":"ok"
 | Web app: checkout and panel | [localhost:3000](http://localhost:3000) |
 | Payments API | `localhost:8080` |
 | Acquirer simulator | `localhost:8090`, and `localhost:8091` for its book and faults |
-| Jaeger (traces) | [localhost:16686](http://localhost:16686) |
+| Grafana: the dashboard, traces and alerts | [localhost:3001](http://localhost:3001) |
+| Prometheus | [localhost:9090](http://localhost:9090) |
 | Postgres | `localhost:5432` (one database and one role per service) |
 | Kafka | `localhost:9094` |
 
@@ -109,6 +110,10 @@ docker compose exec postgres psql -U webhooks -d webhooks \
   -c 'SELECT event_type, status, attempts, last_error, next_attempt_at FROM deliveries'
 ```
 
+### Observability
+
+[localhost:3001](http://localhost:3001) opens Grafana on the **Payments** dashboard, with no login: payments per second and their outcomes, the latency of the request and of the acquirer's calls, the breaker, the recovery, the outbox and the webhooks, the service graph, and the alerts firing. A point on a latency graph opens the trace of that request in Tempo, from the `POST` to its webhook. The services push their traces and metrics over OTLP ([ADR 0006](docs/decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)).
+
 ## Checks
 
 ```bash
@@ -132,7 +137,7 @@ make ci                # formatting, linters, every test, govulncheck and the we
 | 6. Recovery | Done |
 | 7. Webhooks | Done |
 | 8. Checkout and panel | Done |
-| 9. Proof | Not started |
+| 9. Proof | In progress: observability done; k6 and the consistency checker next |
 
 What each step delivers is in the [RFC](docs/rfc/0001-architecture.md#17-plan).
 
@@ -144,4 +149,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery, the webhooks and the web app are implemented; the proof under load is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers. And it walks the web app in a browser: a payment made and followed, a card number that never reaches the merchant, the webhooks with their retries, and the acquirer down.
+Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery, the webhooks, the web app, and the metrics, traces and alerts are implemented; the proof under load is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers. And it walks the web app in a browser: a payment made and followed, a card number that never reaches the merchant, the webhooks with their retries, and the acquirer down.
