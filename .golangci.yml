@@ -26,6 +26,7 @@ linters:
           allow:
             - $gostd
             - github.com/OscarNunezU/payment-processing-service/internal/payments/domain
+            - github.com/OscarNunezU/payment-processing-service/internal/webhooks/domain
           deny:
             - pkg: context
               desc: "the domain is pure: context belongs to the use cases and adapters (ADR 0004)"
