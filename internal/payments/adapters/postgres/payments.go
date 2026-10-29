@@ -15,6 +15,7 @@ import (
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/domain"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/outbox"
+	"github.com/OscarNunezU/payment-processing-service/internal/platform/telemetry"
 )
 
 // paymentColumns is the read order that scanPayment expects.
@@ -56,17 +57,18 @@ func scanPayment(row pgx.Row, extra ...any) (domain.Payment, error) {
 // is inserted, and the payment that holds it is read afterwards. Two requests
 // with one key at the same time are serialized by that index: the second
 // waits until the first commits, and then finds its payment. Only a new
-// payment goes through admit, and a refusal rolls the insert back.
+// payment goes through admit, and a refusal rolls the insert back. The trace of
+// ctx is kept with the payment, for the recovery to resume.
 func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func() error) (domain.Payment, bool, error) {
 	created := false
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO payments (id, merchant_id, order_id, idempotency_key, request_hash, amount, currency,
-			                      card_token, status, attempts, epoch, lease_until, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+			                      card_token, status, attempts, epoch, lease_until, created_at, updated_at, traceparent)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, nullif($14, ''))
 			ON CONFLICT (merchant_id, idempotency_key) DO NOTHING`,
 			p.ID, p.MerchantID, p.OrderID, p.IdempotencyKey, p.RequestHash[:], p.Amount, p.Currency,
-			p.CardToken, p.Status, p.Attempts, p.Epoch, p.LeaseUntil, p.CreatedAt,
+			p.CardToken, p.Status, p.Attempts, p.Epoch, p.LeaseUntil, p.CreatedAt, telemetry.TraceParent(ctx),
 		)
 		if err != nil {
 			if violates(err, "payments_one_live_per_order") {

@@ -8,6 +8,8 @@ import (
 	"time"
 	"uuid"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/OscarNunezU/payment-processing-service/internal/events"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/postgres"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
@@ -243,5 +245,31 @@ func TestUnresolvedReportsTheOldestPaymentInProgress(t *testing.T) {
 	}
 	if u, err := store.Unresolved(t.Context(), oldest.CreatedAt); err != nil || u != (app.Unresolved{}) {
 		t.Errorf("before the oldest: got %+v, %v, want nothing", u, err)
+	}
+}
+
+func TestTheClaimCarriesTheTraceOfThePaymentsRequest(t *testing.T) {
+	store, _ := paymentsSetup(t)
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	request := trace.ContextWithSpanContext(t.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled,
+	}))
+	traced := newPayment(merchant().ID, "k1", "o1")
+	if _, _, err := store.InsertPayment(request, traced, admitAll); err != nil {
+		t.Fatal(err)
+	}
+	untraced := newPayment(merchant().ID, "k2", "o2")
+	insert(t, store, untraced)
+
+	traces := map[string]string{}
+	for _, c := range claim(t, store, untraced.LeaseUntil) {
+		traces[c.Payment.ID] = c.Trace
+	}
+	if got := traces[traced.ID]; got != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
+		t.Errorf("the traced payment was claimed with trace %q, want its request's", got)
+	}
+	if got, ok := traces[untraced.ID]; !ok || got != "" {
+		t.Errorf("the payment without a trace was claimed with %q, %v", got, ok)
 	}
 }

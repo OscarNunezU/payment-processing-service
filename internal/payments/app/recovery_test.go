@@ -313,3 +313,53 @@ func TestAPaymentUnresolvedForFiveMinutesRaisesAnAlert(t *testing.T) {
 		t.Errorf("got logs %s, want an error with the alert, the count and the oldest payment", logs)
 	}
 }
+
+type traceKey struct{}
+
+// traced records the trace of the context of each authorization.
+type traced struct {
+	*apptest.Acquirer
+	mu     sync.Mutex
+	traces []string
+}
+
+func (a *traced) Authorize(ctx context.Context, r app.AuthorizationRequest) domain.Answer {
+	a.mu.Lock()
+	trace, _ := ctx.Value(traceKey{}).(string)
+	a.traces = append(a.traces, trace)
+	a.mu.Unlock()
+	return a.Acquirer.Authorize(ctx, r)
+}
+
+// NFR07: a payment is one trace from its request to its webhook, also when
+// the recovery finishes it.
+func TestTheRecoveryResumesTheTraceOfThePaymentsRequest(t *testing.T) {
+	approving := apptest.Approving()
+	approving.Script = []domain.Answer{uncertain}
+	acquirer := &traced{Acquirer: approving}
+	r := newRecovery(t, approving, func(*apptest.Store, *apptest.Acquirer) app.Acquirer { return acquirer })
+	p := r.accept(t)
+	const trace = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	r.store.SetTrace(p.ID, trace)
+
+	ended := 0
+	r.svc = app.NewService(app.Deps{
+		Payments: r.store, Acquirer: acquirer, Breaker: r.breaker,
+		NewID: func() string { return uuid.NewV7().String() }, Now: r.clock.Now, Random: func() float64 { return 0.5 },
+		ResumeTrace: func(ctx context.Context, trace, name string) (context.Context, func()) {
+			if name != "recover payment" {
+				t.Errorf("the span is named %q", name)
+			}
+			return context.WithValue(ctx, traceKey{}, trace), func() { ended++ }
+		},
+		Log: slog.New(slog.DiscardHandler),
+	})
+	r.recoverAfter(t, 2*time.Second)
+
+	if got := r.payment(t, p.ID); got.Status != domain.PaymentApproved {
+		t.Fatalf("got %+v, want APPROVED by the recovery", got)
+	}
+	if len(acquirer.traces) != 2 || acquirer.traces[1] != trace || ended != 1 {
+		t.Errorf("the calls ran in traces %q and %d spans ended, want the recovery's call in the request's trace", acquirer.traces, ended)
+	}
+}

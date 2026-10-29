@@ -25,10 +25,21 @@ func (s *Service) Recover(ctx context.Context, limit int) (int, error) {
 	ctx = context.WithoutCancel(ctx)
 	var wg sync.WaitGroup
 	for _, c := range claims {
-		wg.Go(func() { s.recover(ctx, c) })
+		wg.Go(func() {
+			ctx, end := s.resumeTrace(ctx, c.Trace)
+			defer end()
+			s.recover(ctx, c)
+		})
 	}
 	wg.Wait()
 	return len(claims), nil
+}
+
+func (s *Service) resumeTrace(ctx context.Context, trace string) (context.Context, func()) {
+	if s.d.ResumeTrace == nil {
+		return ctx, func() {}
+	}
+	return s.d.ResumeTrace(ctx, trace, "recover payment")
 }
 
 func (s *Service) recover(ctx context.Context, c Claim) {
