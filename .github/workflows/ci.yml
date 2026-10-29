@@ -63,6 +63,19 @@ jobs:
         run: |
           curl --fail --silent --show-error localhost:8080/v1/merchant \
             -H 'Authorization: Bearer sk_test_local_tienda_uno' | jq -e '.legal_name == "Tienda Uno SpA"'
+      - name: Accept a payment, and replay it
+        run: |
+          token=$(curl --fail --silent --show-error localhost:8090/v1/tokens \
+            -H 'Authorization: Bearer pk_sim_local_only' \
+            -d '{"number":"4111111111111111","exp_month":12,"exp_year":2035,"cvc":"123"}' | jq -r .token)
+          body="{\"order_id\":\"ci-1\",\"amount\":15000,\"currency\":\"CLP\",\"card_token\":\"$token\"}"
+          pay() {
+            curl --fail --silent --show-error --dump-header headers localhost:8080/v1/payments \
+              -H 'Authorization: Bearer sk_test_local_tienda_uno' -H 'Idempotency-Key: ci-1' -d "$body"
+          }
+          id=$(pay | jq -er 'select(.status == "PENDING") | .id')
+          test "$(pay | jq -r .id)" = "$id"
+          grep -qi '^Idempotent-Replayed: true' headers
       - name: Authorize a test card at the acquirer simulator
         run: |
           token=$(curl --fail --silent --show-error localhost:8090/v1/tokens \
