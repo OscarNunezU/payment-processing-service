@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It accepts card payments in milliseconds, authorizes them with an acquirer in the background through Kafka, and tells the merchant the result by webhook. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator and merchant authentication.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, and accepting and querying payments. Payments stay `PENDING` until the processor arrives in step 5.
 
 ## Documents
 
@@ -44,6 +44,20 @@ Compose loads three merchants. Their keys are for local development only.
 curl -s localhost:8080/v1/merchant -H 'Authorization: Bearer sk_test_local_tienda_uno'
 ```
 
+### Payments
+
+```bash
+token=$(curl -s localhost:8090/v1/tokens -H 'Authorization: Bearer pk_sim_local_only' \
+  -d '{"number":"4111111111111111","exp_month":12,"exp_year":2035,"cvc":"123"}' | jq -r .token)
+curl -si localhost:8080/v1/payments -H 'Authorization: Bearer sk_test_local_tienda_uno' \
+  -H 'Idempotency-Key: order-1001-1' \
+  -d "{\"order_id\":\"1001\",\"amount\":15000,\"currency\":\"CLP\",\"card_token\":\"$token\"}"
+curl -s localhost:8080/v1/payments/<id> -H 'Authorization: Bearer sk_test_local_tienda_uno'
+curl -s 'localhost:8080/v1/payments?status=PENDING&limit=10' -H 'Authorization: Bearer sk_test_local_tienda_uno'
+```
+
+Sending the same request again with the same `Idempotency-Key` returns the same payment, with `Idempotent-Replayed: true`.
+
 ### The acquirer simulator
 
 The simulator tokenizes cards and authorizes them by idempotency key, as the acquirer would. Its test cards and its faults are in the [RFC](docs/rfc/0001-architecture.md#10-acquirer-simulator). The keys below are for local development only.
@@ -75,8 +89,8 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | Foundation | Done |
 | 1. Scope | Done |
 | 2. Acquirer simulator | Done |
-| 3. Merchants | In progress |
-| 4. Accepting and querying payments | Not started |
+| 3. Merchants | Done |
+| 4. Accepting and querying payments | In progress |
 | 5. Relay and processing | Not started |
 | 6. Uncertainty and failures | Not started |
 | 7. Webhooks | Not started |
@@ -93,4 +107,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator and merchant authentication are implemented; everything else is designed.
+Today, the foundation, the acquirer simulator, merchant authentication, and accepting and querying payments are implemented; everything else is designed.

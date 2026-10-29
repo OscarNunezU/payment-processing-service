@@ -191,7 +191,7 @@ The idempotency key lives in the payment row, with no table of its own. It is un
 | Same key, at the same time | The second insert waits on the unique index until the first commits, then follows the rows above |
 
 - The insert comes first and the key is looked up only on a conflict, so a new payment costs one round trip.
-- A request rejected by a business rule also looks up its key before answering `422`: a retry of a payment that was already accepted gets its payment, even if a limit changed since. If that lookup fails, the answer is `500`, not `422`, because the payment might exist.
+- A request rejected by a business rule also looks up its key before answering `422`: a retry of a payment that was already accepted gets its payment, even if a limit changed since. If that lookup fails, the answer is `503`, not `422`, because the payment might exist.
 - Requests rejected with `400` or `422` do not use up their key.
 
 An order has at most one payment that is pending, processing or approved. A partial unique index enforces it (section 7), so two concurrent payments for one order cannot both be inserted.
@@ -205,8 +205,8 @@ The `payments` database:
 | `merchants` | Legal name, RUT and status |
 | `merchant_limits` | The maximum amount per payment, for each currency the merchant accepts |
 | `api_keys` | The merchant, the first characters and a SHA-256 hash of the secret, and the dates it was created and revoked |
-| `payments` | Id (UUID), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, reversal start and next reversal time, and timestamps |
-| `payment_events` | One row per status change and per call to the acquirer: type, statuses, attempt, outcome, latency and response code |
+| `payments` | Id (UUIDv7, so ids sort by time), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, reversal start and next reversal time, and timestamps |
+| `payment_history` | One row per status change and per call to the acquirer: kind, status, attempt, outcome, latency, response code and reason |
 | `outbox` | Events waiting for the relay |
 
 The `webhooks` database:
@@ -309,9 +309,10 @@ The simulator keeps its book and its tokens in memory. Restarting it is like mov
 - **Base URL:** `payments-api` serves `/v1`.
 - **Endpoints:** `POST /v1/payments`, `GET /v1/payments/{id}` and `GET /v1/payments`; and `GET /v1/merchant`, which returns the merchant that owns the key.
 - **Authentication:** `Authorization: Bearer sk_test_…`. A missing, unknown or revoked key answers `401`. When Postgres does not answer, the answer is `503`, since the key may well be valid.
-- **Errors:** `{"error": {"code": "...", "message": "...", "param": "..."}}`, with stable codes such as `order_has_active_payment` or `idempotency_key_reused`.
-- **Status codes:** `202` for an accepted payment and for its replays; `200` for queries; `400`, `401`, `404`, `409` and `422`; `500`; and `503` while Postgres is unavailable.
-- **Pagination:** `limit` (50 by default, 100 at most) and `starting_after`, a payment id, with `has_more` in the answer.
+- **Errors:** `{"error": {"code": "...", "message": "..."}}`, with stable codes such as `order_has_active_payment` or `idempotency_key_reused`. An invalid request also lists every malformed field, `"fields": [{"field": "amount", "message": "..."}]`, so it can be fixed in one round trip. The body accepts only the documented fields: a typo is rejected, never ignored.
+- **Status codes:** `202` for an accepted payment and for its replays; `200` for queries; `400`, `401`, `404`, `409`, `413` and `422`; and `503` with `Retry-After` when Postgres does not answer. A `503` is safe to retry with the same key.
+- **Pagination:** `limit` (50 by default, 100 at most) and `starting_after`, the id of the last payment of the previous page, with `has_more` in the answer. Payments are listed newest first, by id: the ids are UUIDv7, so they sort by time, and an index serves any page as fast as the first.
+- **Isolation:** every query is filtered by the merchant of the key, so another merchant's payment answers `404`, as if it did not exist.
 - **Specification:** OpenAPI 3.1 in `api/`.
 
 Example:
