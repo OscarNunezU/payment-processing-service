@@ -3,13 +3,16 @@
 import { redirect } from "next/navigation";
 
 import { type ApiError, createPayment } from "@/lib/api";
+import { refusal } from "@/lib/refusal";
 
 export type Values = { amount: string; currency: string };
 
 // Why the payment was not made, when it was not.
 export type State = {
   rejected?: ApiError & { httpStatus: number; retryAfter?: number };
-  unreachable?: boolean;
+  // unconfirmed: no answer, or one that does not say whether the payment
+  // exists. Sending the form again, with the same key, finds out.
+  unconfirmed?: { retryAfter?: number };
   tokenError?: string;
 };
 
@@ -33,7 +36,10 @@ export async function pay(values: Values, form: FormData): Promise<State> {
   });
 
   if (result === null) {
-    return { unreachable: true };
+    return { unconfirmed: {} };
+  }
+  if (!result.ok && refusal(result.httpStatus, result.error.code) === "uncertain") {
+    return { unconfirmed: { retryAfter: result.retryAfter } };
   }
   if (!result.ok) {
     return { rejected: { ...result.error, httpStatus: result.httpStatus, retryAfter: result.retryAfter } };

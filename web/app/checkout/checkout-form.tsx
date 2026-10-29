@@ -103,12 +103,16 @@ export function CheckoutForm({ idempotencyKey, orderId, acquirer }: Props) {
         </div>
       )}
 
-      {state.unreachable && (
+      {state.unconfirmed && (
         <div className={styles.error} role="alert">
           <p>
             <strong>No se pudo confirmar el pago</strong>
           </p>
-          <p>La API no respondió. Vuelve a enviarlo: con la misma clave no se crea un pago duplicado.</p>
+          <p>
+            El servicio no pudo decir si el pago quedó creado. Vuelve a enviarlo
+            {state.unconfirmed.retryAfter ? ` en ${state.unconfirmed.retryAfter} s` : ""}: con la misma clave no se crea
+            un duplicado, y si ya existía, recibirás ese mismo pago.
+          </p>
         </div>
       )}
 
