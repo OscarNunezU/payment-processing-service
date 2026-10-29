@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, and their authorization in the request, with the events relayed to Kafka. A payment whose answer was not clear stays `PROCESSING` until the recovery arrives in step 6.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, and the recovery, which finishes or reverses the payments whose answer was not clear.
 
 ## Documents
 
@@ -17,7 +17,7 @@ Requirements: Docker. For development, Go as well; the toolchain downloads Go 1.
 
 ```bash
 docker compose up --build --wait   # starts everything and waits until it is healthy
-curl -s localhost:8080/readyz      # {"status":"ready","checks":{"postgres":"ok"}}
+curl -s localhost:8080/readyz      # {"status":"ready","checks":{"acquirer":"ok","postgres":"ok"}}
 ```
 
 | Service | Address |
@@ -56,7 +56,13 @@ curl -s localhost:8080/v1/payments/<id> -H 'Authorization: Bearer sk_test_local_
 curl -s 'localhost:8080/v1/payments?status=APPROVED&limit=10' -H 'Authorization: Bearer sk_test_local_tienda_uno'
 ```
 
-The answer is `201` with the result, such as `APPROVED` and its authorization code. When the acquirer gives no clear answer, it is `202` with the payment `PROCESSING`. Sending the same request again with the same `Idempotency-Key` returns the same payment, with `Idempotent-Replayed: true`, without calling the acquirer again.
+The answer is `201` with the result, such as `APPROVED` and its authorization code. When the acquirer gives no clear answer, it is `202` with the payment `PROCESSING`, and `payments-worker` finishes it in the background. Sending the same request again with the same `Idempotency-Key` returns the same payment, with `Idempotent-Replayed: true`, without calling the acquirer again.
+
+Some test cards show the recovery at work, and the payment's history shows each call:
+
+- `4000000000000127` fails the first attempt: the answer is `202`, and the payment is `APPROVED` a couple of seconds later, on attempt 2.
+- `4000000000000135` approves after the 5 s timeout: the answer is `202`, and the next attempt gets the approval the acquirer stored for the key.
+- `4000000000000150` never answers: after 3 attempts the authorization is reversed, and the payment ends `FAILED` with reason `acquirer_unavailable`, about 30 s after the request.
 
 ### The acquirer simulator
 
@@ -91,8 +97,8 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | 2. Acquirer simulator | Done |
 | 3. Merchants | Done |
 | 4. Accepting and querying payments | Done |
-| 5. Authorization in the request | In progress |
-| 6. Recovery | Not started |
+| 5. Authorization in the request | Done |
+| 6. Recovery | Done |
 | 7. Webhooks | Not started |
 | 8. Checkout and panel | Not started |
 | 9. Proof | Not started |
@@ -107,4 +113,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request and the relay are implemented; everything else is designed.
+Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay and the recovery are implemented; everything else is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers.
