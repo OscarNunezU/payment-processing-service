@@ -1,0 +1,27 @@
+/* Shared by what stands in for content: the table's skeleton and the error and
+   not found screens. */
+.message {
+  margin-top: 8px;
+  padding: 40px 24px;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}
+
+.title {
+  font-weight: 500;
+}
+
+.skeleton {
+  height: 240px;
+  border-radius: var(--radius);
+  background: var(--skeleton);
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  50% {
+    opacity: 0.55;
+  }
+}
