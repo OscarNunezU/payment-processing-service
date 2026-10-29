@@ -45,7 +45,8 @@ type settings struct {
 	acquirerURL     string
 	acquirerKey     string
 	acquirerTimeout time.Duration
-	otlpEndpoint    string
+	tracesEndpoint  string
+	metricsEndpoint string
 	version         string
 	logLevel        slog.Level
 	shutdownGrace   time.Duration
@@ -63,7 +64,8 @@ func loadSettings(env *config.Env) (settings, error) {
 		// calls also end before the lease of their claim (RFC 0001, section
 		// 5.6).
 		acquirerTimeout: env.DurationUpTo("ACQUIRER_TIMEOUT", domain.AcquirerTimeout, domain.MaxAcquirerTimeout),
-		otlpEndpoint:    env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		tracesEndpoint:  env.String("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""),
+		metricsEndpoint: env.String("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""),
 		version:         env.String("SERVICE_VERSION", "dev"),
 		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),
 		shutdownGrace:   env.Duration("SHUTDOWN_GRACE", 20*time.Second),
@@ -93,15 +95,17 @@ func run(ctx context.Context, env *config.Env) error {
 	log := logging.New(os.Stdout, service, s.logLevel)
 	slog.SetDefault(log)
 
-	shutdownTracing, err := telemetry.Setup(ctx, service, s.version, s.otlpEndpoint)
+	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Config{
+		Service: service, Version: s.version, TracesEndpoint: s.tracesEndpoint, MetricsEndpoint: s.metricsEndpoint,
+	})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(flushCtx); err != nil {
-			log.Warn("could not flush the last spans", "error", err)
+		if err := shutdownTelemetry(flushCtx); err != nil {
+			log.Warn("could not flush the last spans and metrics", "error", err)
 		}
 	}()
 

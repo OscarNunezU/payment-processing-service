@@ -39,7 +39,8 @@ type settings struct {
 	acquirerKey     string
 	acquirerTimeout time.Duration
 	maxInFlight     int
-	otlpEndpoint    string
+	tracesEndpoint  string
+	metricsEndpoint string
 	version         string
 	logLevel        slog.Level
 	shutdownGrace   time.Duration
@@ -56,7 +57,8 @@ func loadSettings(env *config.Env) (settings, error) {
 		// 5.6. A call must end before the payment's lease does.
 		acquirerTimeout: env.DurationUpTo("ACQUIRER_TIMEOUT", domain.AcquirerTimeout, domain.MaxAcquirerTimeout),
 		maxInFlight:     env.Int("MAX_PAYMENTS_IN_FLIGHT", 512, 100_000),
-		otlpEndpoint:    env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		tracesEndpoint:  env.String("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""),
+		metricsEndpoint: env.String("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""),
 		version:         env.String("SERVICE_VERSION", "dev"),
 		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),
 		// In-flight requests get up to 20 s to finish (RFC 0001, section 5.6).
@@ -83,15 +85,17 @@ func run() error {
 	log := logging.New(os.Stdout, service, s.logLevel)
 	slog.SetDefault(log)
 
-	shutdownTracing, err := telemetry.Setup(ctx, service, s.version, s.otlpEndpoint)
+	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Config{
+		Service: service, Version: s.version, TracesEndpoint: s.tracesEndpoint, MetricsEndpoint: s.metricsEndpoint,
+	})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(flushCtx); err != nil {
-			log.Warn("could not flush the last spans", "error", err)
+		if err := shutdownTelemetry(flushCtx); err != nil {
+			log.Warn("could not flush the last spans and metrics", "error", err)
 		}
 	}()
 
