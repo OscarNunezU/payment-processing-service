@@ -1,8 +1,8 @@
 # payment-processing-service
 
-A payment processing service for online merchants. It accepts card payments in milliseconds, authorizes them with an acquirer in the background through Kafka, and tells the merchant the result by webhook. It is designed so that no failure can charge a customer twice or lose an accepted payment.
+A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, and accepting and querying payments. Payments stay `PENDING` until the processor arrives in step 5.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, and accepting and querying payments. Until step 5, payments are accepted as `PENDING` and not sent to the acquirer yet.
 
 ## Documents
 
@@ -90,9 +90,9 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | 1. Scope | Done |
 | 2. Acquirer simulator | Done |
 | 3. Merchants | Done |
-| 4. Accepting and querying payments | In progress |
-| 5. Relay and processing | Not started |
-| 6. Uncertainty and failures | Not started |
+| 4. Accepting and querying payments | Done |
+| 5. Authorization in the request | Not started |
+| 6. Recovery | Not started |
 | 7. Webhooks | Not started |
 | 8. Checkout and panel | Not started |
 | 9. Proof | Not started |
