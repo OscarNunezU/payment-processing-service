@@ -35,7 +35,7 @@ Acquirers are slow at times and unavailable at others, and a timeout does not sa
 - Ledger, settlement, reconciliation and payouts.
 - Risk rules and fraud detection.
 - Merchant onboarding, a merchant portal with login, and key rotation.
-- Kubernetes, SLOs and metrics dashboards.
+- Kubernetes, and SLOs with error budgets. Metrics, a dashboard and alerts are part of the proof (ADR 0006).
 - 3-D Secure.
 
 Each of them is in the [roadmap](roadmap.md), with what it would change.
@@ -281,6 +281,7 @@ Feature: Merchants
 - The acceptance scenarios above, as end-to-end tests against the full local environment, using the fault controls of the acquirer simulator.
 - A consistency checker. After a load test with faults, it compares every payment in the database with the acquirer simulator's book and with the webhooks received, and checks INV02 to INV06.
 - A load test with k6 for NFR01 and NFR02. The README reports what was measured, and on which machine.
+- A Grafana dashboard that shows the service during the load test and its faults: latency, outcomes, the breaker, the recovery, the outbox and the webhooks.
 
 ## 14. Delivery
 

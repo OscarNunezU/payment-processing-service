@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery, the webhooks and the web app as built in steps 6 to 8 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), the recovery, the webhooks and the web app as built in steps 6 to 8, and the observability of step 9 ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)) · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 
@@ -30,7 +30,7 @@ In one paragraph: the API authorizes a payment inside the merchant's request and
 | `web` | Next.js app that plays the merchant: a test checkout and a panel. | memory |
 | `migrate`, `seed` | One-shot commands: the migrations and the local seed data. | none |
 
-Infrastructure: one Postgres server, with one database and one role per service; Kafka in KRaft mode, with one broker locally; and Jaeger for traces.
+Infrastructure: one Postgres server, with one database and one role per service; Kafka in KRaft mode, with one broker locally; and Tempo for traces, Prometheus for metrics and Grafana to see both (section 13).
 
 ## 4. Architecture
 
@@ -140,7 +140,7 @@ In each `payments-worker`, every second, the recovery claims up to 100 `PROCESSI
 
 Each payment's step runs in the trace of the request that created it, which T1 keeps with the payment, so its calls, its event and its webhook join that trace (NFR07).
 
-Every minute, it also raises an alert for any payment in `PROCESSING` for more than 5 minutes (INV04): a log line at level `ERROR`, with `alert=payments_unresolved`, the count and the oldest payment. The API and the recovery apply the same rules, implemented once in the use cases (ADR 0004). The recovery does not depend on Kafka, so it keeps working while Kafka is down. When the worker stops, the recovery claims nothing more, and finishes the payments it already claimed.
+Every minute, it also logs an alert for any payment in `PROCESSING` for more than 5 minutes (INV04): a line at level `ERROR`, with `alert=payments_unresolved`, the count and the oldest payment. The same count is a metric, and a Prometheus rule fires the `PaymentsUnresolved` alert (section 13). The API and the recovery apply the same rules, implemented once in the use cases (ADR 0004). The recovery does not depend on Kafka, so it keeps working while Kafka is down. When the worker stops, the recovery claims nothing more, and finishes the payments it already claimed.
 
 ### 5.6 Time budget
 
@@ -367,9 +367,23 @@ Location: /v1/payments/01a187cb…
 
 ## 13. Observability
 
-- **Traces:** OpenTelemetry. The trace context goes from the request to the call to the acquirer, to the outbox row, from the row to the Kafka headers, and from there to the webhook, so a payment is a single trace from the `POST` to the webhook (NFR07). A payment that the recovery finishes keeps that trace too: T1 stores the trace context with the payment, and the recovery resumes it. The services send their spans to Jaeger over OTLP.
-- **Logs:** JSON with the trace id, the payment id and the merchant id. Card tokens and API keys are never logged. The alert of INV04 is a log line (section 5.5), until metrics arrive.
-- **Metrics:** not in this iteration. k6 measures latency and throughput, and the roadmap adds Prometheus.
+Everything is OpenTelemetry, pushed over OTLP: traces to Tempo, metrics to Prometheus, and Grafana shows both, with a dashboard and the alerts provisioned from the repository ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)).
+
+- **Traces:** the trace context goes from the request to the call to the acquirer, to the outbox row, from the row to the Kafka headers, and from there to the webhook, so a payment is a single trace from the `POST` to the webhook (NFR07). A payment that the recovery finishes keeps that trace too: T1 stores the trace context with the payment, and the recovery resumes it. Tempo derives the service graph from the traces.
+- **Metrics,** pushed every 10 s. The HTTP middleware and client record the durations of requests and calls, with fine buckets around the 5 s timeout (NFR01); a latency point links to the trace it measured. The adapters add the processing, and never the domain or the use cases:
+
+  | Metric | What it shows |
+  |---|---|
+  | `payments.created`, `payments.finished` by status and reason | Throughput and outcomes |
+  | `payments.acquirer.answers` by call and outcome | Uncertain answers rising before the breaker opens |
+  | `payments.breaker.open` | The breaker of each API and worker instance |
+  | `payments.processing`, `payments.unresolved` | Payments in the recovery's hands, and those past INV04's 5 minutes |
+  | `payments.recovery.attempts`, `payments.recovery.reversals` | What the recovery does |
+  | `outbox.pending`, `outbox.published` | Events waiting for Kafka, and published |
+  | `webhooks.attempts` by result, `webhooks.deliveries` by status, `webhooks.delivery.delay` | Deliveries and their retries |
+
+- **Alerts,** evaluated by Prometheus: `PaymentsUnresolved` (INV04), `AcquirerBreakerOpen`, `OutboxBacklog` and `WebhooksFailing`.
+- **Logs:** JSON with the trace id, the payment id and the merchant id. Card tokens and API keys are never logged.
 
 ## 14. Security
 
@@ -418,7 +432,8 @@ api/            OpenAPI
 migrations/     one folder per database
 web/            checkout and panel (Next.js)
 tests/          end-to-end, the consistency checker and k6
-deploy/local/   configuration for Compose
+deploy/local/   configuration for Compose: Postgres, Tempo, Prometheus and its
+                alerts, and Grafana with its dashboard
 docs/           PRD, RFC, roadmap and decisions (ADR)
 compose.yaml
 ```

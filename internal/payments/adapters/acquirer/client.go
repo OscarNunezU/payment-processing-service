@@ -77,6 +77,7 @@ func (c *Client) Authorize(ctx context.Context, r app.AuthorizationRequest) doma
 	a := c.authorize(ctx, r)
 	a.Latency = c.now().Sub(start)
 	c.breaker.Record(a.Outcome)
+	countAnswer(ctx, "authorize", a.Outcome)
 	return a
 }
 
@@ -103,6 +104,7 @@ func (c *Client) Reverse(ctx context.Context, key string) domain.Answer {
 	start := c.now()
 	a := c.reverse(ctx, key)
 	a.Latency = c.now().Sub(start)
+	countAnswer(ctx, "reverse", a.Outcome)
 	return a
 }
 

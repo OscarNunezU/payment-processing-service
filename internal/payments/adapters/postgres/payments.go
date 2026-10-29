@@ -96,6 +96,7 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func(
 		return domain.Payment{}, false, err
 	}
 	if created {
+		countCreated(ctx)
 		return p, true, nil
 	}
 
@@ -141,7 +142,7 @@ func (s *Store) record(ctx context.Context, p domain.Payment, final *events.Paym
 	if !p.Status.Final() {
 		lease = &p.LeaseUntil
 	}
-	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE payments
 			SET status = $3, reason = nullif($4, ''), authorization_code = nullif($5, ''),
@@ -179,6 +180,10 @@ func (s *Store) record(ctx context.Context, p domain.Payment, final *events.Paym
 			Headers: map[string]string{events.HeaderEventID: final.ID, events.HeaderEventType: string(final.Type)},
 		})
 	})
+	if err == nil && final != nil {
+		countFinished(ctx, p)
+	}
+	return err
 }
 
 // violates reports whether err is a unique violation of constraint.

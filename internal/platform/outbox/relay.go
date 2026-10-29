@@ -124,6 +124,7 @@ func (r *Relay) publish(ctx context.Context, conn *pgxpool.Conn) (int, error) {
 	if _, err := conn.Exec(ctx, `DELETE FROM outbox WHERE id = ANY($1)`, ids); err != nil {
 		return 0, fmt.Errorf("delete %d published events: %w", len(ids), err)
 	}
+	published.Add(ctx, int64(len(records)))
 	return len(records), nil
 }
 

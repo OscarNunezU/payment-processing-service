@@ -2,16 +2,20 @@ package telemetry
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace"
 )
 
 func TestSetupPropagatesTheTraceContext(t *testing.T) {
-	shutdown, err := Setup(context.Background(), "payments-api", "test", "")
+	shutdown, err := Setup(context.Background(), Config{Service: "payments-api", Version: "test"})
 	if err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -33,7 +37,7 @@ func TestSetupPropagatesTheTraceContext(t *testing.T) {
 }
 
 func TestAResumedSpanJoinsTheTraceItWasKeptFrom(t *testing.T) {
-	shutdown, err := Setup(context.Background(), "payments-worker", "test", "")
+	shutdown, err := Setup(context.Background(), Config{Service: "payments-worker", Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,4 +65,57 @@ func TestAResumedSpanJoinsTheTraceItWasKeptFrom(t *testing.T) {
 	if sc := trace.SpanContextFromContext(fresh); !sc.IsValid() || sc.TraceID() == request.SpanContext().TraceID() {
 		t.Errorf("without a traceparent, got %s, want a trace of its own", sc.TraceID())
 	}
+}
+
+func TestMetricsArePushedOverOTLP(t *testing.T) {
+	type push struct{ path, contentType string }
+	pushes := make(chan push, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pushes <- push{r.URL.Path, r.Header.Get("Content-Type")}
+	}))
+	defer srv.Close()
+
+	shutdown, err := Setup(context.Background(), Config{Service: "payments-api", Version: "test", MetricsEndpoint: srv.URL + "/api/v1/otlp/v1/metrics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter, err := otel.Meter("test").Int64Counter("test.pushed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter.Add(context.Background(), 1)
+	// Shutting down pushes what is pending, as the services do when they stop.
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case p := <-pushes:
+		if p.path != "/api/v1/otlp/v1/metrics" || p.contentType != "application/x-protobuf" {
+			t.Errorf("got a push to %s as %s, want OTLP protobuf to the configured path", p.path, p.contentType)
+		}
+	default:
+		t.Fatal("no metrics were pushed")
+	}
+}
+
+func TestHTTPDurationsHaveFineBucketsAroundTheTimeout(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader), sdkmetric.WithView(durations...))
+	histogram, err := provider.Meter("test").Float64Histogram("http.server.request.duration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	histogram.Record(context.Background(), 5.03) // a call cut at the 5 s timeout, plus its writes
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	point := rm.ScopeMetrics[0].Metrics[0].Data.(metricdata.Histogram[float64]).DataPoints[0]
+	for i, bound := range point.Bounds {
+		if bound == 5.05 && point.BucketCounts[i] == 1 && point.Bounds[i-1] == 5.025 {
+			return
+		}
+	}
+	t.Errorf("5.03 s fell in the buckets %v, %v, want it between 5.025 and 5.05 s", point.Bounds, point.BucketCounts)
 }

@@ -12,7 +12,7 @@ import (
 // TestMain installs tracing as the services do, without exporting, so the
 // scenarios can follow a payment's trace.
 func TestMain(m *testing.M) {
-	shutdown, err := telemetry.Setup(context.Background(), "scenarios", "test", "")
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{Service: "scenarios", Version: "test"})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

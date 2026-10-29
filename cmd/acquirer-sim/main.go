@@ -26,13 +26,14 @@ import (
 const service = "acquirer-sim"
 
 type settings struct {
-	publicAddr    string
-	adminAddr     string
-	sim           acquirersim.Config
-	otlpEndpoint  string
-	version       string
-	logLevel      slog.Level
-	shutdownGrace time.Duration
+	publicAddr      string
+	adminAddr       string
+	sim             acquirersim.Config
+	tracesEndpoint  string
+	metricsEndpoint string
+	version         string
+	logLevel        slog.Level
+	shutdownGrace   time.Duration
 }
 
 func loadSettings(env *config.Env) (settings, error) {
@@ -47,10 +48,11 @@ func loadSettings(env *config.Env) (settings, error) {
 			LateAnswer: env.Duration("LATE_ANSWER", 8*time.Second),
 			TokenTTL:   env.Duration("TOKEN_TTL", time.Hour),
 		},
-		otlpEndpoint:  env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		version:       env.String("SERVICE_VERSION", "dev"),
-		logLevel:      env.LogLevel("LOG_LEVEL", slog.LevelInfo),
-		shutdownGrace: env.Duration("SHUTDOWN_GRACE", 10*time.Second),
+		tracesEndpoint:  env.String("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""),
+		metricsEndpoint: env.String("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""),
+		version:         env.String("SERVICE_VERSION", "dev"),
+		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),
+		shutdownGrace:   env.Duration("SHUTDOWN_GRACE", 10*time.Second),
 	}
 	return s, env.Err()
 }
@@ -73,15 +75,17 @@ func run() error {
 	log := logging.New(os.Stdout, service, s.logLevel)
 	slog.SetDefault(log)
 
-	shutdownTracing, err := telemetry.Setup(ctx, service, s.version, s.otlpEndpoint)
+	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Config{
+		Service: service, Version: s.version, TracesEndpoint: s.tracesEndpoint, MetricsEndpoint: s.metricsEndpoint,
+	})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(flushCtx); err != nil {
-			log.Warn("could not flush the last spans", "error", err)
+		if err := shutdownTelemetry(flushCtx); err != nil {
+			log.Warn("could not flush the last spans and metrics", "error", err)
 		}
 	}()
 

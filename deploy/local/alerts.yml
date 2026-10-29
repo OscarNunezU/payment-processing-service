@@ -1,0 +1,42 @@
+# The alerts of the payments service (RFC 0001, sections 5.5 and 13).
+groups:
+  - name: payments
+    rules:
+      # INV04: every accepted payment reaches a final state, or raises an alert.
+      - alert: PaymentsUnresolved
+        expr: max(payments_unresolved) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Payments are still PROCESSING more than 5 minutes after they were created.
+          description: The recovery cannot finish them, for example because the acquirer keeps refusing their reversal, or the recovery is not running.
+
+      - alert: AcquirerBreakerOpen
+        expr: max by (job) (payments_breaker_open) == 1
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: The circuit breaker of {{ $labels.job }} keeps refusing calls to the acquirer.
+          description: New payments are answered 503 without being created until the acquirer answers again.
+
+      - alert: OutboxBacklog
+        expr: max(outbox_pending) > 1000
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Over 1,000 events are waiting in the outbox.
+          description: Kafka is down or slow. Payments are still authorized; their webhooks are delayed.
+
+      - alert: WebhooksFailing
+        expr: |
+          sum(rate(webhooks_attempts_total{result!="2xx"}[10m]))
+            / sum(rate(webhooks_attempts_total[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Most webhook attempts fail.
+          description: A merchant's endpoint is down, or rejects the signature. Deliveries are retried for 24 hours.

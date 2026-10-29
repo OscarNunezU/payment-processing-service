@@ -1,0 +1,13 @@
+# Prometheus for the local environment (ADR 0006). The services push their
+# metrics over OTLP, so there is nothing to scrape; Tempo writes the service
+# graph through remote write.
+global:
+  evaluation_interval: 15s
+
+# OTLP pushes arrive a little out of order.
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+
+rule_files:
+  - /etc/prometheus/alerts.yml

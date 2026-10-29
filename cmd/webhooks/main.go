@@ -40,26 +40,28 @@ import (
 const service = "webhooks"
 
 type settings struct {
-	httpAddr      string
-	databaseURL   string
-	maxConns      int
-	kafkaBrokers  []string
-	otlpEndpoint  string
-	version       string
-	logLevel      slog.Level
-	shutdownGrace time.Duration
+	httpAddr        string
+	databaseURL     string
+	maxConns        int
+	kafkaBrokers    []string
+	tracesEndpoint  string
+	metricsEndpoint string
+	version         string
+	logLevel        slog.Level
+	shutdownGrace   time.Duration
 }
 
 func loadSettings(env *config.Env) (settings, error) {
 	s := settings{
-		httpAddr:      env.String("HTTP_ADDR", ":8082"),
-		databaseURL:   env.Required("DATABASE_URL"),
-		maxConns:      env.Int("DATABASE_MAX_CONNS", 10, 500),
-		kafkaBrokers:  strings.Split(env.Required("KAFKA_BROKERS"), ","),
-		otlpEndpoint:  env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		version:       env.String("SERVICE_VERSION", "dev"),
-		logLevel:      env.LogLevel("LOG_LEVEL", slog.LevelInfo),
-		shutdownGrace: env.Duration("SHUTDOWN_GRACE", 20*time.Second),
+		httpAddr:        env.String("HTTP_ADDR", ":8082"),
+		databaseURL:     env.Required("DATABASE_URL"),
+		maxConns:        env.Int("DATABASE_MAX_CONNS", 10, 500),
+		kafkaBrokers:    strings.Split(env.Required("KAFKA_BROKERS"), ","),
+		tracesEndpoint:  env.String("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""),
+		metricsEndpoint: env.String("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""),
+		version:         env.String("SERVICE_VERSION", "dev"),
+		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),
+		shutdownGrace:   env.Duration("SHUTDOWN_GRACE", 20*time.Second),
 	}
 	return s, env.Err()
 }
@@ -86,15 +88,17 @@ func run(ctx context.Context, env *config.Env) error {
 	log := logging.New(os.Stdout, service, s.logLevel)
 	slog.SetDefault(log)
 
-	shutdownTracing, err := telemetry.Setup(ctx, service, s.version, s.otlpEndpoint)
+	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Config{
+		Service: service, Version: s.version, TracesEndpoint: s.tracesEndpoint, MetricsEndpoint: s.metricsEndpoint,
+	})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(flushCtx); err != nil {
-			log.Warn("could not flush the last spans", "error", err)
+		if err := shutdownTelemetry(flushCtx); err != nil {
+			log.Warn("could not flush the last spans and metrics", "error", err)
 		}
 	}()
 
@@ -115,8 +119,12 @@ func run(ctx context.Context, env *config.Env) error {
 	}
 	defer kafkaClient.Close()
 
+	store := postgres.New(db)
+	if err := postgres.ObserveDeliveries(store); err != nil {
+		return fmt.Errorf("observe the deliveries: %w", err)
+	}
 	svc := app.NewService(app.Deps{
-		Store:  postgres.New(db),
+		Store:  store,
 		Sender: sender.New(domain.Timeout),
 		NewID:  func() string { return uuid.NewV7().String() },
 		Now:    time.Now,
