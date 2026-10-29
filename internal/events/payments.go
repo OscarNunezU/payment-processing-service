@@ -16,11 +16,11 @@ const (
 	HeaderEventType = "event-type"
 )
 
-// Type names what happened to the payment.
+// Type names what happened to the payment. Each payment produces one event,
+// when it reaches its final state.
 type Type string
 
 const (
-	PaymentAccepted Type = "payment.accepted"
 	PaymentApproved Type = "payment.approved"
 	PaymentDeclined Type = "payment.declined"
 	PaymentFailed   Type = "payment.failed"

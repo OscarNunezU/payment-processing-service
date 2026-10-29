@@ -22,12 +22,13 @@ func (a *testAPI) pay(t *testing.T, key, body string) *httptest.ResponseRecorder
 func TestCreateAPayment(t *testing.T) {
 	api := newTestAPI(t)
 	rec := api.pay(t, "k1", paymentBody)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("got %d %s, want 202", rec.Code, rec.Body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d %s, want 201", rec.Code, rec.Body)
 	}
 	p := decodeInto[paymentResponse](t, rec)
-	if p.Status != domain.PaymentPending || p.OrderID != "1001" || p.Amount != 15000 || p.Currency != domain.CLP || p.Card != nil {
-		t.Errorf("got %+v, want a PENDING payment without a card yet", p)
+	if p.Status != domain.PaymentApproved || p.AuthorizationCode != "7T4N4V" || p.OrderID != "1001" || p.Amount != 15000 ||
+		p.Currency != domain.CLP || p.Card == nil || p.Card.Last4 != "1111" {
+		t.Errorf("got %+v, want an APPROVED payment with its code and card", p)
 	}
 	if loc := rec.Header().Get("Location"); loc != "/v1/payments/"+p.ID {
 		t.Errorf("Location = %q", loc)
@@ -40,8 +41,37 @@ func TestCreateAPayment(t *testing.T) {
 	}
 
 	again := api.pay(t, "k1", paymentBody)
-	if again.Code != http.StatusAccepted || again.Header().Get("Idempotent-Replayed") != "true" || decodeInto[paymentResponse](t, again).ID != p.ID {
-		t.Errorf("the retry: got %d %s, want 202 replayed with the same payment", again.Code, again.Body)
+	if again.Code != http.StatusCreated || again.Header().Get("Idempotent-Replayed") != "true" || decodeInto[paymentResponse](t, again).ID != p.ID {
+		t.Errorf("the retry: got %d %s, want 201 replayed with the same payment", again.Code, again.Body)
+	}
+}
+
+func TestAPaymentStillProcessingAnswers202(t *testing.T) {
+	api := newTestAPI(t)
+	api.acquirer.Answer = domain.Answer{Outcome: domain.OutcomeUncertain, ResponseCode: "timeout"}
+	rec := api.pay(t, "k1", paymentBody)
+	if rec.Code != http.StatusAccepted || decodeInto[paymentResponse](t, rec).Status != domain.PaymentProcessing {
+		t.Errorf("got %d %s, want 202 PROCESSING", rec.Code, rec.Body)
+	}
+	if again := api.pay(t, "k1", paymentBody); again.Code != http.StatusAccepted || again.Header().Get("Idempotent-Replayed") != "true" {
+		t.Errorf("the retry: got %d, want 202 replayed", again.Code)
+	}
+}
+
+func TestAClosedGateAnswers503ButNeverToARetry(t *testing.T) {
+	api := newTestAPI(t)
+	if rec := api.pay(t, "k1", paymentBody); rec.Code != http.StatusCreated {
+		t.Fatalf("got %d", rec.Code)
+	}
+	api.gate.Closed = true
+
+	rec := api.pay(t, "k2", strings.Replace(paymentBody, "1001", "1002", 1))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" ||
+		decodeInto[httpx.ErrorBody](t, rec).Error.Code != "acquirer_unavailable" {
+		t.Errorf("a new payment: got %d, want 503 acquirer_unavailable with Retry-After", rec.Code)
+	}
+	if again := api.pay(t, "k1", paymentBody); again.Code != http.StatusCreated || again.Header().Get("Idempotent-Replayed") != "true" {
+		t.Errorf("a retry: got %d, want its payment", again.Code)
 	}
 }
 
@@ -89,7 +119,7 @@ func TestEveryInvalidFieldIsReported(t *testing.T) {
 
 func TestReuseConflictAndSuspension(t *testing.T) {
 	api := newTestAPI(t)
-	if rec := api.pay(t, "k1", paymentBody); rec.Code != http.StatusAccepted {
+	if rec := api.pay(t, "k1", paymentBody); rec.Code != http.StatusCreated {
 		t.Fatalf("got %d", rec.Code)
 	}
 	if rec := api.pay(t, "k1", strings.Replace(paymentBody, "15000", "12000", 1)); rec.Code != http.StatusUnprocessableEntity ||
@@ -119,7 +149,8 @@ func TestGetAPaymentWithItsHistory(t *testing.T) {
 		t.Fatalf("got %d %s", rec.Code, rec.Body)
 	}
 	got := decodeInto[paymentResponse](t, rec)
-	if got.ID != created.ID || len(got.History) != 1 || got.History[0].Kind != domain.HistoryStatus || got.History[0].Status != domain.PaymentPending {
+	if got.ID != created.ID || len(got.History) != 3 || got.History[0].Status != domain.PaymentProcessing ||
+		got.History[1].Kind != domain.HistoryAcquirerCall || got.History[1].Outcome != "approved" || got.History[2].Status != domain.PaymentApproved {
 		t.Errorf("got %+v", got)
 	}
 
@@ -142,7 +173,7 @@ func TestListPayments(t *testing.T) {
 	api := newTestAPI(t)
 	for i := range 3 {
 		body := strings.Replace(paymentBody, "1001", fmt.Sprintf("o%d", i), 1)
-		if rec := api.pay(t, fmt.Sprintf("k%d", i), body); rec.Code != http.StatusAccepted {
+		if rec := api.pay(t, fmt.Sprintf("k%d", i), body); rec.Code != http.StatusCreated {
 			t.Fatal(rec.Body)
 		}
 	}
@@ -158,7 +189,7 @@ func TestListPayments(t *testing.T) {
 		t.Errorf("second page: got %+v", page)
 	}
 
-	rec = api.do(t, http.MethodGet, "/v1/payments?status=APPROVED", "Bearer "+api.key, "")
+	rec = api.do(t, http.MethodGet, "/v1/payments?status=DECLINED", "Bearer "+api.key, "")
 	if page := decodeInto[listResponse](t, rec); page.Data == nil || len(page.Data) != 0 {
 		t.Errorf("an empty page: got %s, want an empty list, not null", rec.Body)
 	}

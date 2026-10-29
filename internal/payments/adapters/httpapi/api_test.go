@@ -22,20 +22,27 @@ var tiendaUno = domain.Merchant{
 	Status: domain.MerchantActive, MaxAmount: map[domain.Currency]int64{domain.CLP: 5_000_000},
 }
 
-// testAPI is the API on an in-memory store, with one merchant and its key.
+// testAPI is the API on in-memory ports, with one merchant and its key.
 type testAPI struct {
-	store *apptest.Store
-	mux   *http.ServeMux
-	key   string
+	store    *apptest.Store
+	acquirer *apptest.Acquirer
+	gate     *apptest.Gate
+	mux      *http.ServeMux
+	key      string
 }
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
-	store := apptest.NewStore()
-	svc := app.NewService(store, store, func() string { return uuid.NewV7().String() }, time.Now)
-	mux := http.NewServeMux()
-	New(svc, slog.New(slog.DiscardHandler)).Register(mux)
-	return &testAPI{store: store, mux: mux, key: store.AddMerchant(tiendaUno)}
+	api := &testAPI{store: apptest.NewStore(), acquirer: apptest.Approving(), gate: &apptest.Gate{}}
+	svc := app.NewService(app.Deps{
+		Merchants: api.store, Payments: api.store, Acquirer: api.acquirer, Gate: api.gate,
+		NewID: func() string { return uuid.NewV7().String() }, Now: time.Now,
+		Random: func() float64 { return 0.5 }, Log: slog.New(slog.DiscardHandler),
+	})
+	api.mux = http.NewServeMux()
+	New(svc, slog.New(slog.DiscardHandler)).Register(api.mux)
+	api.key = api.store.AddMerchant(tiendaUno)
+	return api
 }
 
 // do sends a request with the given Authorization header, and the headers as

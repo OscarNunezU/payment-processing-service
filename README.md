@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, and accepting and querying payments. Until step 5, payments are accepted as `PENDING` and not sent to the acquirer yet.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, and their authorization in the request, with the events relayed to Kafka. A payment whose answer was not clear stays `PROCESSING` until the recovery arrives in step 6.
 
 ## Documents
 
@@ -53,10 +53,10 @@ curl -si localhost:8080/v1/payments -H 'Authorization: Bearer sk_test_local_tien
   -H 'Idempotency-Key: order-1001-1' \
   -d "{\"order_id\":\"1001\",\"amount\":15000,\"currency\":\"CLP\",\"card_token\":\"$token\"}"
 curl -s localhost:8080/v1/payments/<id> -H 'Authorization: Bearer sk_test_local_tienda_uno'
-curl -s 'localhost:8080/v1/payments?status=PENDING&limit=10' -H 'Authorization: Bearer sk_test_local_tienda_uno'
+curl -s 'localhost:8080/v1/payments?status=APPROVED&limit=10' -H 'Authorization: Bearer sk_test_local_tienda_uno'
 ```
 
-Sending the same request again with the same `Idempotency-Key` returns the same payment, with `Idempotent-Replayed: true`.
+The answer is `201` with the result, such as `APPROVED` and its authorization code. When the acquirer gives no clear answer, it is `202` with the payment `PROCESSING`. Sending the same request again with the same `Idempotency-Key` returns the same payment, with `Idempotent-Replayed: true`, without calling the acquirer again.
 
 ### The acquirer simulator
 
@@ -91,7 +91,7 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | 2. Acquirer simulator | Done |
 | 3. Merchants | Done |
 | 4. Accepting and querying payments | Done |
-| 5. Authorization in the request | Not started |
+| 5. Authorization in the request | In progress |
 | 6. Recovery | Not started |
 | 7. Webhooks | Not started |
 | 8. Checkout and panel | Not started |
@@ -107,4 +107,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, and accepting and querying payments are implemented; everything else is designed.
+Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request and the relay are implemented; everything else is designed.

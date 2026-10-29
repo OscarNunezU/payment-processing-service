@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,51 +20,48 @@ import (
 // paymentColumns is the read order that scanPayment expects.
 const paymentColumns = `id, merchant_id, order_id, idempotency_key, request_hash, amount, currency, card_token,
 	coalesce(card_brand, ''), coalesce(card_last4, ''), status, coalesce(reason, ''),
-	coalesce(authorization_code, ''), coalesce(decline_code, ''), created_at, updated_at`
+	coalesce(authorization_code, ''), coalesce(decline_code, ''), attempts, epoch, lease_until,
+	created_at, updated_at`
 
 func scanPayment(row pgx.Row) (domain.Payment, error) {
 	var (
-		p    domain.Payment
-		hash []byte
+		p     domain.Payment
+		hash  []byte
+		lease *time.Time
 	)
 	err := row.Scan(&p.ID, &p.MerchantID, &p.OrderID, &p.IdempotencyKey, &hash, &p.Amount, &p.Currency, &p.CardToken,
-		&p.CardBrand, &p.CardLast4, &p.Status, &p.Reason, &p.AuthorizationCode, &p.DeclineCode, &p.CreatedAt, &p.UpdatedAt)
+		&p.CardBrand, &p.CardLast4, &p.Status, &p.Reason, &p.AuthorizationCode, &p.DeclineCode, &p.Attempts, &p.Epoch,
+		&lease, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return domain.Payment{}, err
 	}
 	copy(p.RequestHash[:], hash)
 	// pgx reads timestamps in the local time zone; the service speaks UTC.
 	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
+	if lease != nil {
+		p.LeaseUntil = lease.UTC()
+	}
 	return p, nil
 }
 
-// InsertPayment stores p, its first history entry and the outbox row of
-// accepted in one transaction (RFC 0001, section 5.1).
+// InsertPayment is T1 (RFC 0001, section 5.1): the payment and its first
+// attempt, recorded before the call to the acquirer.
 //
 // The unique index on the key is the arbiter: when the key is taken, nothing
 // is inserted, and the payment that holds it is read afterwards. Two requests
 // with one key at the same time are serialized by that index: the second
-// waits until the first commits, and then finds its payment.
-func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, accepted events.PaymentEvent) (domain.Payment, bool, error) {
-	payload, err := json.Marshal(accepted)
-	if err != nil {
-		return domain.Payment{}, false, fmt.Errorf("encode the event of payment %s: %w", p.ID, err)
-	}
-
+// waits until the first commits, and then finds its payment. Only a new
+// payment goes through admit, and a refusal rolls the insert back.
+func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func() error) (domain.Payment, bool, error) {
 	created := false
-	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
-			WITH inserted AS (
-				INSERT INTO payments (id, merchant_id, order_id, idempotency_key, request_hash, amount, currency,
-				                      card_token, status, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-				ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
-				RETURNING id, status, created_at
-			)
-			INSERT INTO payment_history (payment_id, kind, status, created_at)
-			SELECT id, 'status', status, created_at FROM inserted`,
+			INSERT INTO payments (id, merchant_id, order_id, idempotency_key, request_hash, amount, currency,
+			                      card_token, status, attempts, epoch, lease_until, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+			ON CONFLICT (merchant_id, idempotency_key) DO NOTHING`,
 			p.ID, p.MerchantID, p.OrderID, p.IdempotencyKey, p.RequestHash[:], p.Amount, p.Currency,
-			p.CardToken, p.Status, p.CreatedAt,
+			p.CardToken, p.Status, p.Attempts, p.Epoch, p.LeaseUntil, p.CreatedAt,
 		)
 		if err != nil {
 			if violates(err, "payments_one_live_per_order") {
@@ -74,13 +72,18 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, accepted ev
 		if tag.RowsAffected() == 0 {
 			return nil // the key holds another payment
 		}
+		if err := admit(); err != nil {
+			return err // rolls the insert back: the payment never existed
+		}
 		created = true
-		return outbox.Write(ctx, tx, outbox.Message{
-			Topic:   events.PaymentsTopic,
-			Key:     p.ID,
-			Payload: payload,
-			Headers: map[string]string{events.HeaderEventID: accepted.ID, events.HeaderEventType: string(accepted.Type)},
-		})
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO payment_history (payment_id, kind, status, attempt, created_at)
+			VALUES ($1, 'status', $2, NULL, $4), ($1, 'acquirer_call', NULL, $3, $4)`,
+			p.ID, p.Status, p.Attempts, p.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("record the first attempt of payment %s: %w", p.ID, err)
+		}
+		return nil
 	})
 	if err != nil {
 		return domain.Payment{}, false, err
@@ -97,6 +100,63 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, accepted ev
 		return domain.Payment{}, false, err
 	}
 	return existing, false, nil
+}
+
+// RecordAnswer is T2 (RFC 0001, section 5.2). The update applies only to a
+// payment still PROCESSING with p's epoch, so a writer that was taken over
+// changes nothing.
+func (s *Store) RecordAnswer(ctx context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
+	var payload []byte
+	if final != nil {
+		var err error
+		if payload, err = json.Marshal(final); err != nil {
+			return fmt.Errorf("encode the event of payment %s: %w", p.ID, err)
+		}
+	}
+	var lease *time.Time
+	if !p.Status.Final() {
+		lease = &p.LeaseUntil
+	}
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE payments
+			SET status = $3, reason = nullif($4, ''), authorization_code = nullif($5, ''),
+			    decline_code = nullif($6, ''), card_brand = nullif($7, ''), card_last4 = nullif($8, ''),
+			    lease_until = $9, updated_at = $10
+			WHERE id = $1 AND epoch = $2 AND status = 'PROCESSING'`,
+			p.ID, p.Epoch, p.Status, p.Reason, p.AuthorizationCode, p.DeclineCode, p.CardBrand, p.CardLast4,
+			lease, p.UpdatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("record the answer for payment %s: %w", p.ID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return app.ErrStaleEpoch
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE payment_history SET outcome = $3, latency_ms = $4, response_code = nullif($5, '')
+			WHERE payment_id = $1 AND kind = 'acquirer_call' AND attempt = $2`,
+			p.ID, p.Attempts, a.Outcome, a.Latency.Milliseconds(), a.ResponseCode,
+		); err != nil {
+			return fmt.Errorf("record attempt %d of payment %s: %w", p.Attempts, p.ID, err)
+		}
+		if final == nil {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO payment_history (payment_id, kind, status, reason, created_at)
+			VALUES ($1, 'status', $2, nullif($3, ''), $4)`,
+			p.ID, p.Status, p.Reason, p.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("record the final state of payment %s: %w", p.ID, err)
+		}
+		return outbox.Write(ctx, tx, outbox.Message{
+			Topic:   events.PaymentsTopic,
+			Key:     p.ID,
+			Payload: payload,
+			Headers: map[string]string{events.HeaderEventID: final.ID, events.HeaderEventType: string(final.Type)},
+		})
+	})
 }
 
 // violates reports whether err is a unique violation of constraint.

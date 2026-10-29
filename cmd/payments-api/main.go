@@ -1,6 +1,6 @@
 // Command payments-api serves the public payments API (RFC 0001, section 11):
-// it accepts payments and answers queries about them. It only talks to
-// Postgres, so neither Kafka nor the acquirer can slow it down.
+// it authorizes each payment with the acquirer inside its request, and answers
+// queries. It talks to Postgres and the acquirer only, never to Kafka.
 package main
 
 import (
@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,9 +16,11 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/acquirer"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/httpapi"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/postgres"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/domain"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/config"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/health"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/httpx"
@@ -29,23 +32,32 @@ import (
 const service = "payments-api"
 
 type settings struct {
-	httpAddr      string
-	databaseURL   string
-	maxConns      int
-	otlpEndpoint  string
-	version       string
-	logLevel      slog.Level
-	shutdownGrace time.Duration
+	httpAddr        string
+	databaseURL     string
+	maxConns        int
+	acquirerURL     string
+	acquirerKey     string
+	acquirerTimeout time.Duration
+	maxInFlight     int
+	otlpEndpoint    string
+	version         string
+	logLevel        slog.Level
+	shutdownGrace   time.Duration
 }
 
 func loadSettings(env *config.Env) (settings, error) {
 	s := settings{
-		httpAddr:     env.String("HTTP_ADDR", ":8080"),
-		databaseURL:  env.Required("DATABASE_URL"),
-		maxConns:     env.Int("DATABASE_MAX_CONNS", 20, 500),
-		otlpEndpoint: env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		version:      env.String("SERVICE_VERSION", "dev"),
-		logLevel:     env.LogLevel("LOG_LEVEL", slog.LevelInfo),
+		httpAddr:    env.String("HTTP_ADDR", ":8080"),
+		databaseURL: env.Required("DATABASE_URL"),
+		maxConns:    env.Int("DATABASE_MAX_CONNS", 20, 500),
+		acquirerURL: env.Required("ACQUIRER_URL"),
+		acquirerKey: env.Required("ACQUIRER_SECRET_KEY"),
+		// The time budget and the load shedding of RFC 0001, sections 5.4 and 5.6.
+		acquirerTimeout: env.Duration("ACQUIRER_TIMEOUT", domain.AcquirerTimeout),
+		maxInFlight:     env.Int("MAX_PAYMENTS_IN_FLIGHT", 512, 100_000),
+		otlpEndpoint:    env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		version:         env.String("SERVICE_VERSION", "dev"),
+		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),
 		// In-flight requests get up to 20 s to finish (RFC 0001, section 5.6).
 		shutdownGrace: env.Duration("SHUTDOWN_GRACE", 20*time.Second),
 	}
@@ -88,13 +100,32 @@ func run() error {
 	}
 	defer db.Close()
 
+	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
+	store := postgres.New(db)
+	svc := app.NewService(app.Deps{
+		Merchants: store,
+		Payments:  store,
+		Acquirer:  acquirer.NewClient(s.acquirerURL, s.acquirerKey, s.acquirerTimeout, breaker),
+		Gate:      acquirer.NewGate(breaker, s.maxInFlight),
+		NewID:     func() string { return uuid.NewV7().String() },
+		Now:       time.Now,
+		Random:    rand.Float64, //nolint:gosec // jitter, not a secret
+		Log:       log,
+	})
+
 	mux := http.NewServeMux()
 	httpx.Handle(mux, "GET /healthz", http.HandlerFunc(health.Live))
 	httpx.Handle(mux, "GET /readyz", health.Ready(log, time.Second,
 		health.Check{Name: "postgres", Critical: true, Run: db.Ping},
+		// An open breaker is reported, but the instance stays in rotation: it
+		// still answers queries and retries of existing payments.
+		health.Check{Name: "acquirer", Run: func(context.Context) error {
+			if breaker.Open() {
+				return errors.New("the circuit breaker is open")
+			}
+			return nil
+		}},
 	))
-	store := postgres.New(db)
-	svc := app.NewService(store, store, func() string { return uuid.NewV7().String() }, time.Now)
 	httpapi.New(svc, log).Register(mux)
 	handler := httpx.Trace(service, httpx.RequestID(httpx.AccessLog(log)(httpx.Recover(log)(mux))))
 

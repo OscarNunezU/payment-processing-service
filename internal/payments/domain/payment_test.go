@@ -127,15 +127,17 @@ func TestReplay(t *testing.T) {
 }
 
 func TestStatuses(t *testing.T) {
-	for _, s := range []PaymentStatus{PaymentPending, PaymentProcessing, PaymentApproved, PaymentDeclined, PaymentFailed} {
+	for _, s := range []PaymentStatus{PaymentProcessing, PaymentApproved, PaymentDeclined, PaymentFailed} {
 		if got, err := ParsePaymentStatus(string(s)); err != nil || got != s {
 			t.Errorf("ParsePaymentStatus(%s) = %s, %v", s, got, err)
 		}
 	}
-	if _, err := ParsePaymentStatus("approved"); !errors.Is(err, ErrInvalidStatus) {
-		t.Errorf("lower case: got %v, want ErrInvalidStatus", err)
+	for _, bad := range []string{"approved", "PENDING"} {
+		if _, err := ParsePaymentStatus(bad); !errors.Is(err, ErrInvalidStatus) {
+			t.Errorf("%s: got %v, want ErrInvalidStatus", bad, err)
+		}
 	}
-	if PaymentPending.Final() || PaymentProcessing.Final() || !PaymentApproved.Final() || !PaymentDeclined.Final() || !PaymentFailed.Final() {
+	if PaymentProcessing.Final() || !PaymentApproved.Final() || !PaymentDeclined.Final() || !PaymentFailed.Final() {
 		t.Error("only APPROVED, DECLINED and FAILED are final")
 	}
 }

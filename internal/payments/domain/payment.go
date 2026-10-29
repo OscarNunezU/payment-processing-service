@@ -14,9 +14,8 @@ import (
 type PaymentStatus string
 
 const (
-	// PaymentPending: accepted, and not taken by a worker yet.
-	PaymentPending PaymentStatus = "PENDING"
-	// PaymentProcessing: a worker has it, and it may have reached the acquirer.
+	// PaymentProcessing: recorded and sent, or about to be sent, to the
+	// acquirer. It may be authorized there.
 	PaymentProcessing PaymentStatus = "PROCESSING"
 	PaymentApproved   PaymentStatus = "APPROVED"
 	PaymentDeclined   PaymentStatus = "DECLINED"
@@ -26,10 +25,10 @@ const (
 // ErrInvalidStatus means a status filter names no status.
 var ErrInvalidStatus = errors.New("the status does not exist")
 
-// ParsePaymentStatus accepts the five statuses, in upper case.
+// ParsePaymentStatus accepts the four statuses, in upper case.
 func ParsePaymentStatus(s string) (PaymentStatus, error) {
 	switch st := PaymentStatus(s); st {
-	case PaymentPending, PaymentProcessing, PaymentApproved, PaymentDeclined, PaymentFailed:
+	case PaymentProcessing, PaymentApproved, PaymentDeclined, PaymentFailed:
 		return st, nil
 	}
 	return "", fmt.Errorf("%w: %q", ErrInvalidStatus, s)
@@ -44,9 +43,12 @@ func (s PaymentStatus) Final() bool {
 type FailureReason string
 
 const (
-	ReasonAcquirerRejected    FailureReason = "acquirer_rejected"
+	// ReasonAcquirerRejected: the acquirer refused the request itself.
+	ReasonAcquirerRejected FailureReason = "acquirer_rejected"
+	// ReasonAcquirerUnavailable: no attempt got a definite answer, and nothing
+	// is left authorized: no attempt reached the acquirer, or the
+	// authorization was reversed.
 	ReasonAcquirerUnavailable FailureReason = "acquirer_unavailable"
-	ReasonExpired             FailureReason = "expired"
 )
 
 // Payment is one attempt to charge a card for an order.
@@ -67,8 +69,16 @@ type Payment struct {
 	Reason            FailureReason
 	AuthorizationCode string
 	DeclineCode       string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// Attempts counts the calls to the acquirer, the one in flight included.
+	Attempts int
+	// Epoch grows each time someone takes the payment over; a write with an
+	// older epoch is refused, so a slow writer cannot overwrite a newer one.
+	Epoch int64
+	// LeaseUntil is when the recovery may take the payment over, while it is
+	// PROCESSING.
+	LeaseUntil time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // IsPaymentID reports whether s is a payment id in its canonical form, the
@@ -143,7 +153,9 @@ func CheckRules(m Merchant, r PaymentRequest) error {
 	return nil
 }
 
-// NewPayment builds the PENDING payment for a request that passed its rules.
+// NewPayment builds the payment for a request that passed its rules, as it is
+// recorded before its first call to the acquirer: PROCESSING, with attempt 1,
+// epoch 1, and a lease after which the recovery takes it over.
 func NewPayment(id string, m Merchant, r PaymentRequest, now time.Time) Payment {
 	return Payment{
 		ID:             id,
@@ -154,7 +166,10 @@ func NewPayment(id string, m Merchant, r PaymentRequest, now time.Time) Payment 
 		Amount:         r.Amount,
 		Currency:       Currency(r.Currency),
 		CardToken:      r.CardToken,
-		Status:         PaymentPending,
+		Status:         PaymentProcessing,
+		Attempts:       1,
+		Epoch:          1,
+		LeaseUntil:     now.Add(Lease),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
