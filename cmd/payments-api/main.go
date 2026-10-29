@@ -106,6 +106,9 @@ func run() error {
 	defer db.Close()
 
 	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
+	if err := acquirer.ObserveBreaker(breaker); err != nil {
+		return fmt.Errorf("observe the circuit breaker: %w", err)
+	}
 	store := postgres.New(db)
 	svc := app.NewService(app.Deps{
 		Merchants: store,

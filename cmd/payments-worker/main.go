@@ -130,6 +130,15 @@ func run(ctx context.Context, env *config.Env) error {
 	// its attempts (RFC 0001, section 5.4).
 	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
 	store := postgres.New(db)
+	// What the worker watches over: its breaker, the payments it may have to
+	// recover, and the events waiting for Kafka.
+	if err := errors.Join(
+		acquirer.ObserveBreaker(breaker),
+		postgres.ObserveRecovery(store, time.Now),
+		outbox.ObservePending(db),
+	); err != nil {
+		return fmt.Errorf("observe the worker: %w", err)
+	}
 	svc := app.NewService(app.Deps{
 		Payments: store,
 		Acquirer: acquirer.NewClient(s.acquirerURL, s.acquirerKey, s.acquirerTimeout, breaker),

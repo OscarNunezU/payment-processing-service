@@ -53,6 +53,7 @@ func (s *Sender) Send(ctx context.Context, r app.Request) domain.Attempt {
 	start := s.now()
 	a := s.send(ctx, r)
 	a.Latency = s.now().Sub(start)
+	countAttempt(ctx, a)
 	return a
 }
 

@@ -119,8 +119,12 @@ func run(ctx context.Context, env *config.Env) error {
 	}
 	defer kafkaClient.Close()
 
+	store := postgres.New(db)
+	if err := postgres.ObserveDeliveries(store); err != nil {
+		return fmt.Errorf("observe the deliveries: %w", err)
+	}
 	svc := app.NewService(app.Deps{
-		Store:  postgres.New(db),
+		Store:  store,
 		Sender: sender.New(domain.Timeout),
 		NewID:  func() string { return uuid.NewV7().String() },
 		Now:    time.Now,

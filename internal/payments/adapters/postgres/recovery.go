@@ -59,7 +59,7 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int) ([]app.C
 // StartAttempt records the attempt before its call, so that no call is ever
 // sent without a trace.
 func (s *Store) StartAttempt(ctx context.Context, p domain.Payment, at time.Time) error {
-	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		if err := fenced(ctx, tx, p, `attempts = $3`, p.Attempts); err != nil {
 			return err
 		}
@@ -72,13 +72,17 @@ func (s *Store) StartAttempt(ctx context.Context, p domain.Payment, at time.Time
 		}
 		return nil
 	})
+	if err == nil {
+		recoveryAttempts.Add(ctx, 1)
+	}
+	return err
 }
 
 // StartReversal is the start of a reversal (RFC 0001, section 5.3): the
 // reversal is recorded before it is sent, so the payment is never authorized
 // again.
 func (s *Store) StartReversal(ctx context.Context, p domain.Payment, at time.Time) error {
-	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		if err := fenced(ctx, tx, p, `reversal_started_at = $3`, p.ReversalStartedAt); err != nil {
 			return err
 		}
@@ -90,6 +94,10 @@ func (s *Store) StartReversal(ctx context.Context, p domain.Payment, at time.Tim
 		}
 		return nil
 	})
+	if err == nil {
+		recoveryReversals.Add(ctx, 1)
+	}
+	return err
 }
 
 // RecordReversal records the answer to the payment's last reversal, the one

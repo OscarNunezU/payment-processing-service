@@ -130,5 +130,8 @@ func (s *Store) RecordAttempt(ctx context.Context, d domain.Delivery) error {
 	if tag.RowsAffected() == 0 {
 		return app.ErrStale
 	}
+	if d.Status == domain.Delivered {
+		delay.Record(ctx, d.DeliveredAt.Sub(d.CreatedAt).Seconds())
+	}
 	return nil
 }
