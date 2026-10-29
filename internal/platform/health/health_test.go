@@ -40,7 +40,7 @@ func TestReadyWhenEveryCheckPasses(t *testing.T) {
 func TestAFailingCriticalCheckMakesTheInstanceUnready(t *testing.T) {
 	code, report := ready(t,
 		Check{Name: "postgres", Critical: true, Run: fail},
-		Check{Name: "valkey", Run: pass},
+		Check{Name: "kafka", Run: pass},
 	)
 	if code != http.StatusServiceUnavailable || report.Status != "unready" || report.Checks["postgres"] != "failing" {
 		t.Errorf("got %d %+v, want 503 unready", code, report)
@@ -50,10 +50,10 @@ func TestAFailingCriticalCheckMakesTheInstanceUnready(t *testing.T) {
 func TestAFailingNonCriticalCheckIsOnlyReported(t *testing.T) {
 	code, report := ready(t,
 		Check{Name: "postgres", Critical: true, Run: pass},
-		Check{Name: "valkey", Run: fail},
+		Check{Name: "kafka", Run: fail},
 	)
-	if code != http.StatusOK || report.Status != "ready" || report.Checks["valkey"] != "failing" {
-		t.Errorf("got %d %+v, want 200 ready with valkey failing", code, report)
+	if code != http.StatusOK || report.Status != "ready" || report.Checks["kafka"] != "failing" {
+		t.Errorf("got %d %+v, want 200 ready with kafka failing", code, report)
 	}
 }
 

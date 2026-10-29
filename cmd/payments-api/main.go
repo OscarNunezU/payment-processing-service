@@ -1,5 +1,6 @@
 // Command payments-api serves the public payments API. For now it only answers
-// its health endpoints; the API arrives during milestone 1.
+// its health endpoints; the API arrives in step 4 of the plan (RFC 0001,
+// section 17).
 package main
 
 import (
@@ -19,7 +20,6 @@ import (
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/logging"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/postgres"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/telemetry"
-	"github.com/OscarNunezU/payment-processing-service/internal/platform/valkey"
 )
 
 const service = "payments-api"
@@ -28,7 +28,6 @@ type settings struct {
 	httpAddr      string
 	databaseURL   string
 	maxConns      int
-	valkeyAddr    string
 	otlpEndpoint  string
 	version       string
 	logLevel      slog.Level
@@ -40,11 +39,10 @@ func loadSettings(env *config.Env) (settings, error) {
 		httpAddr:     env.String("HTTP_ADDR", ":8080"),
 		databaseURL:  env.Required("DATABASE_URL"),
 		maxConns:     env.Int("DATABASE_MAX_CONNS", 20, 500),
-		valkeyAddr:   env.Required("VALKEY_RISK_ADDR"),
 		otlpEndpoint: env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		version:      env.String("SERVICE_VERSION", "dev"),
 		logLevel:     env.LogLevel("LOG_LEVEL", slog.LevelInfo),
-		// In-flight requests get up to 20 s to finish (RFC 0001, section 5.2).
+		// In-flight requests get up to 20 s to finish (RFC 0001, section 5.6).
 		shutdownGrace: env.Duration("SHUTDOWN_GRACE", 20*time.Second),
 	}
 	return s, env.Err()
@@ -86,16 +84,10 @@ func run() error {
 	}
 	defer db.Close()
 
-	// Valkey is not a startup dependency: without it the API works in degraded
-	// mode (RFC 0001, section 10).
-	risk := valkey.Connect(s.valkeyAddr, 2*time.Second, log)
-	defer risk.Close()
-
 	mux := http.NewServeMux()
 	httpx.Handle(mux, "GET /healthz", http.HandlerFunc(health.Live))
 	httpx.Handle(mux, "GET /readyz", health.Ready(log, time.Second,
 		health.Check{Name: "postgres", Critical: true, Run: db.Ping},
-		health.Check{Name: "valkey-risk", Run: risk.Check},
 	))
 	handler := httpx.Trace(service, httpx.RequestID(httpx.AccessLog(log)(httpx.Recover(log)(mux))))
 

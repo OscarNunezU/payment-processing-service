@@ -1,6 +1,6 @@
 // Package telemetry sets up OpenTelemetry tracing. The W3C trace context lets a
 // payment be followed across HTTP calls and Kafka messages as a single trace
-// (RFC 0001, section 12).
+// (RFC 0001, section 13).
 package telemetry
 
 import (
@@ -16,9 +16,9 @@ import (
 )
 
 // Setup installs the global tracer provider and propagator, and returns a
-// function that flushes pending spans on shutdown. Spans go to the OTLP
-// collector at endpoint ("host:port"). With an empty endpoint, spans are
-// created but never exported, which is what tests want.
+// function that flushes pending spans on shutdown. Spans go over OTLP to
+// endpoint ("host:port"). With an empty endpoint, spans are created but never
+// exported, which is what tests want.
 func Setup(ctx context.Context, service, version, endpoint string) (shutdown func(context.Context) error, err error) {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{},
@@ -31,8 +31,8 @@ func Setup(ctx context.Context, service, version, endpoint string) (shutdown fun
 		)),
 	}
 	if endpoint != "" {
-		// Plain text is enough for the collector next to the service; mutual
-		// TLS between services arrives in milestone 4.
+		// Plain text is enough for a local trace backend; production would
+		// use TLS.
 		exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure())
 		if err != nil {
 			return nil, fmt.Errorf("create the trace exporter: %w", err)
