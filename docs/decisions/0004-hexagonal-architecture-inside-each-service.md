@@ -23,7 +23,7 @@ internal/payments/
   app/          Use cases (accept, process, reverse, expire) and the ports
                 they need: Store, Acquirer, Clock, IDs.
   adapters/
-    http/       Inbound: the public API.
+    httpapi/    Inbound: the public API.
     kafka/      Inbound: the processor, a consumer of payment events.
     sweeper/    Inbound: due reversals and expirations, from Postgres.
     postgres/   Outbound: Store.

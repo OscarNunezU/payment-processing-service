@@ -1,6 +1,6 @@
-// Command payments-api serves the public payments API. For now it only answers
-// its health endpoints; the API arrives in step 4 of the plan (RFC 0001,
-// section 17).
+// Command payments-api serves the public payments API (RFC 0001, section 11).
+// So far it authenticates merchants; payments arrive in step 4 of the plan
+// (RFC 0001, section 17).
 package main
 
 import (
@@ -14,11 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/httpapi"
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/postgres"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/config"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/health"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/httpx"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/logging"
-	"github.com/OscarNunezU/payment-processing-service/internal/platform/postgres"
+	platformpg "github.com/OscarNunezU/payment-processing-service/internal/platform/postgres"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/telemetry"
 )
 
@@ -78,7 +80,7 @@ func run() error {
 		}
 	}()
 
-	db, err := postgres.Open(ctx, s.databaseURL, service, int32(s.maxConns)) //nolint:gosec // loadSettings caps it at 500
+	db, err := platformpg.Open(ctx, s.databaseURL, service, int32(s.maxConns)) //nolint:gosec // loadSettings caps it at 500
 	if err != nil {
 		return err
 	}
@@ -89,6 +91,7 @@ func run() error {
 	httpx.Handle(mux, "GET /readyz", health.Ready(log, time.Second,
 		health.Check{Name: "postgres", Critical: true, Run: db.Ping},
 	))
+	httpapi.New(postgres.New(db), log).Register(mux)
 	handler := httpx.Trace(service, httpx.RequestID(httpx.AccessLog(log)(httpx.Recover(log)(mux))))
 
 	log.Info("listening", "addr", s.httpAddr, "version", s.version)

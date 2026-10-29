@@ -59,6 +59,10 @@ jobs:
         run: docker compose up --build --wait
       - name: Check readiness
         run: curl --fail --silent --show-error localhost:8080/readyz
+      - name: Authenticate a seeded merchant
+        run: |
+          curl --fail --silent --show-error localhost:8080/v1/merchant \
+            -H 'Authorization: Bearer sk_test_local_tienda_uno' | jq -e '.legal_name == "Tienda Uno SpA"'
       - name: Authorize a test card at the acquirer simulator
         run: |
           token=$(curl --fail --silent --show-error localhost:8090/v1/tokens \

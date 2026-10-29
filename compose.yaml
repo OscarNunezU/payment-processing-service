@@ -91,6 +91,17 @@ services:
       postgres:
         condition: service_healthy
 
+  # The local merchants, with the API keys in the README.
+  seed-payments:
+    <<: *go-service
+    restart: "no"
+    command: ["/seed"]
+    environment:
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+    depends_on:
+      migrate-payments:
+        condition: service_completed_successfully
+
   payments-api:
     <<: *go-service
     command: ["/payments-api"]
@@ -101,7 +112,7 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      migrate-payments:
+      seed-payments:
         condition: service_completed_successfully
       jaeger:
         condition: service_started
