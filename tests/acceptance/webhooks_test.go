@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +39,7 @@ type received struct {
 	at        time.Time
 	id        string
 	signature string
+	trace     string
 	body      []byte
 }
 
@@ -56,7 +59,8 @@ func newReceiver(t *testing.T, failures int) *receiver {
 		body, _ := io.ReadAll(req.Body)
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.got = append(r.got, received{at: time.Now(), id: req.Header.Get("Webhook-Id"), signature: req.Header.Get("Webhook-Signature"), body: body})
+		r.got = append(r.got, received{at: time.Now(), id: req.Header.Get("Webhook-Id"), signature: req.Header.Get("Webhook-Signature"),
+			trace: req.Header.Get("traceparent"), body: body})
 		if len(r.got) <= r.failures {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -219,5 +223,34 @@ func TestTheMerchantsEndpointIsDown(t *testing.T) {
 	first, second := got[1].at.Sub(got[0].at), got[2].at.Sub(got[1].at)
 	if first < 4*time.Second || second <= first {
 		t.Errorf("the waits were %s and %s, want them to increase from about 5 s", first, second)
+	}
+}
+
+// NFR07: a payment can be followed in a single trace from its request to its
+// webhook, whether the request finished it or the recovery did.
+func TestAPaymentIsOneTraceFromItsRequestToItsWebhook(t *testing.T) {
+	s := start(t)
+	r := newReceiver(t, 0)
+	s.runWebhooks(t, r.url)
+
+	traces := map[string]string{} // payment id → the trace of its request
+	for i, card := range []string{approves, unavailableOnce} {
+		traceID := fmt.Sprintf("4bf92f3577b34da6a3ce929d0e0e473%d", i)
+		var a answer
+		status, _ := s.post(t, s.url+"/v1/payments", keyUno,
+			map[string]string{"Idempotency-Key": "k-" + card, "traceparent": "00-" + traceID + "-00f067aa0ba902b7-01"},
+			map[string]any{"order_id": "o-" + card, "amount": 15000, "currency": "CLP", "card_token": s.tokenize(t, card)}, &a)
+		if status != http.StatusCreated && status != http.StatusAccepted {
+			t.Fatalf("got %d %+v", status, a)
+		}
+		traces[a.ID] = traceID
+	}
+
+	for _, w := range r.wait(t, 2, 15*time.Second) {
+		var e events.PaymentEvent
+		_ = json.Unmarshal(w.body, &e)
+		if want := traces[e.PaymentID]; want == "" || !strings.Contains(w.trace, want) {
+			t.Errorf("the webhook of payment %s came in trace %q, want the trace of its request %s", e.PaymentID, w.trace, want)
+		}
 	}
 }

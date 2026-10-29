@@ -30,9 +30,11 @@ import (
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/recovery"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/domain"
+	"github.com/OscarNunezU/payment-processing-service/internal/platform/httpx"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/migrate"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/pgtest"
 	platformpg "github.com/OscarNunezU/payment-processing-service/internal/platform/postgres"
+	"github.com/OscarNunezU/payment-processing-service/internal/platform/telemetry"
 	"github.com/OscarNunezU/payment-processing-service/migrations"
 )
 
@@ -146,7 +148,7 @@ func (s *service) serveAPI(t *testing.T, payments app.Payments) string {
 	})
 	mux := http.NewServeMux()
 	httpapi.New(svc, quiet).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(httpx.Trace("payments-api", mux))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -157,13 +159,14 @@ func (s *service) runRecovery(t *testing.T) {
 	t.Helper()
 	breaker := acquirer.NewBreaker(5, breakerCooldown, time.Now)
 	svc := app.NewService(app.Deps{
-		Payments: s.store,
-		Acquirer: acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, breaker),
-		Breaker:  breaker,
-		NewID:    func() string { return uuid.NewV7().String() },
-		Now:      time.Now,
-		Random:   noJitter,
-		Log:      quiet,
+		Payments:    s.store,
+		Acquirer:    acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, breaker),
+		Breaker:     breaker,
+		NewID:       func() string { return uuid.NewV7().String() },
+		Now:         time.Now,
+		Random:      noJitter,
+		ResumeTrace: telemetry.Resume,
+		Log:         quiet,
 	})
 	loop := recovery.New(svc, quiet)
 	loop.Interval = 20 * time.Millisecond
