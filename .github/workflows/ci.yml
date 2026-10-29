@@ -167,6 +167,22 @@ jobs:
           test "$(sql webhooks "SELECT count(DISTINCT event_id) FROM deliveries")" = "$final"
           # The receiver shows each one with its signature verified.
           test "$(curl --fail --silent --show-error localhost:3000/webhooks | grep -o 'válida' | wc -l)" -ge "$final"
+      # Observability (ADR 0006): metrics in Prometheus, traces in Tempo, and
+      # Grafana with its dashboard. Metrics are pushed every 10 s.
+      - name: Metrics, traces and the dashboard arrive
+        run: |
+          query() { curl --fail --silent --show-error --get localhost:9090/api/v1/query --data-urlencode "query=$1"; }
+          for _ in $(seq 30); do
+            query 'sum(payments_finished_total)' | jq -e '.data.result[0].value[1] | tonumber > 0' >/dev/null && break
+            sleep 2
+          done
+          query 'sum(payments_finished_total)' | jq -e '.data.result[0].value[1] | tonumber > 0'
+          query 'count(http_server_request_duration_seconds_bucket{job="payments-api"})' | jq -e '.data.result | length == 1'
+          curl --fail --silent --show-error localhost:9090/api/v1/rules | jq -e '[.data.groups[].rules[].name] | index("PaymentsUnresolved")'
+          # Tempo, through Grafana's data source.
+          curl --fail --silent --show-error 'localhost:3001/api/datasources/proxy/uid/tempo/api/search?tags=service.name%3Dpayments-api&limit=5' \
+            | jq -e '.traces | length > 0'
+          curl --fail --silent --show-error localhost:3001/api/dashboards/uid/payments | jq -e '.dashboard.panels | length > 10'
       - name: The web app serves its pages
         run: |
           for page in / /checkout /webhooks /acquirer /api/health; do

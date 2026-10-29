@@ -71,10 +71,62 @@ services:
       kafka:
         condition: service_healthy
 
-  jaeger:
-    image: jaegertracing/jaeger:2.11.0
+  # Observability (ADR 0006): the services push traces to Tempo and metrics
+  # to Prometheus over OTLP, and Grafana shows both.
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./deploy/local/tempo.yaml:/etc/tempo.yaml:ro
+    tmpfs:
+      # Tempo runs as an unprivileged user.
+      - /var/tempo:mode=1777
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+      # The services push over OTLP, and Tempo writes the service graph.
+      - --web.enable-otlp-receiver
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./deploy/local/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/local/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
-      - "16686:16686"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9090/-/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      # Local development only: no login, and the dashboards are files.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/payments.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./deploy/local/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/local/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:3000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
 
   acquirer-sim:
     <<: *go-service
@@ -84,15 +136,18 @@ services:
       ACQUIRER_SECRET_KEY: sk_sim_local_only
       ACQUIRER_PUBLISHABLE_KEY: pk_sim_local_only
       ALLOWED_ORIGINS: http://localhost:3000
-      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://tempo:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
     # 8090 is the public port, for browsers and the payments services. 8091
     # serves the book and the faults, and keeps working while 8090 is down.
     ports:
       - "8090:8090"
       - "8091:8091"
     depends_on:
-      jaeger:
+      tempo:
         condition: service_started
+      prometheus:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/healthcheck", "http://localhost:8091/healthz"]
       interval: 3s
@@ -151,7 +206,8 @@ services:
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
       ACQUIRER_URL: http://acquirer-sim:8090
       ACQUIRER_SECRET_KEY: sk_sim_local_only
-      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://tempo:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
     ports:
       - "8080:8080"
     depends_on:
@@ -159,8 +215,10 @@ services:
         condition: service_completed_successfully
       acquirer-sim:
         condition: service_healthy
-      jaeger:
+      tempo:
         condition: service_started
+      prometheus:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/healthcheck", "http://localhost:8080/readyz"]
       interval: 3s
@@ -179,7 +237,8 @@ services:
       KAFKA_BROKERS: kafka:9092
       ACQUIRER_URL: http://acquirer-sim:8090
       ACQUIRER_SECRET_KEY: sk_sim_local_only
-      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://tempo:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
@@ -187,8 +246,10 @@ services:
         condition: service_completed_successfully
       acquirer-sim:
         condition: service_healthy
-      jaeger:
+      tempo:
         condition: service_started
+      prometheus:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/healthcheck", "http://localhost:8081/readyz"]
       interval: 3s
@@ -205,14 +266,17 @@ services:
       HTTP_ADDR: ":8082"
       DATABASE_URL: postgres://webhooks:webhooks@postgres:5432/webhooks?sslmode=disable
       KAFKA_BROKERS: kafka:9092
-      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://tempo:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
     depends_on:
       seed-webhooks:
         condition: service_completed_successfully
       kafka-topics:
         condition: service_completed_successfully
-      jaeger:
+      tempo:
         condition: service_started
+      prometheus:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/healthcheck", "http://localhost:8082/readyz"]
       interval: 3s
