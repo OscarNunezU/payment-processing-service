@@ -1,0 +1,21 @@
+{
+  "id": "0199b5a2-7c1e-7d3a-9f00-0000000000e2",
+  "type": "payment.approved",
+  "payment_id": "0199b5a2-7c1e-7d3a-9f00-0000000000a1",
+  "merchant_id": "00000000-0000-4000-8000-000000000001",
+  "occurred_at": "2026-10-28T19:02:11.614Z",
+  "data": {
+    "id": "0199b5a2-7c1e-7d3a-9f00-0000000000a1",
+    "order_id": "1001",
+    "status": "APPROVED",
+    "amount": 15000,
+    "currency": "CLP",
+    "card": {
+      "brand": "visa",
+      "last4": "1111"
+    },
+    "authorization_code": "7T4N4V",
+    "created_at": "2026-10-28T19:02:11.314Z",
+    "updated_at": "2026-10-28T19:02:11.614Z"
+  }
+}
