@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, the recovery, which finishes or reverses the payments whose answer was not clear, and the signed webhooks with their retries. The web app that receives the webhooks locally arrives in step 8.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, the recovery, which finishes or reverses the payments whose answer was not clear, the signed webhooks with their retries, and the web app that plays the merchant: a checkout and a panel.
 
 ## Documents
 
@@ -22,6 +22,7 @@ curl -s localhost:8080/readyz      # {"status":"ready","checks":{"acquirer":"ok"
 
 | Service | Address |
 |---|---|
+| Web app: checkout and panel | [localhost:3000](http://localhost:3000) |
 | Payments API | `localhost:8080` |
 | Acquirer simulator | `localhost:8090`, and `localhost:8091` for its book and faults |
 | Jaeger (traces) | [localhost:16686](http://localhost:16686) |
@@ -43,6 +44,17 @@ Compose loads three merchants. Their keys are for local development only.
 ```bash
 curl -s localhost:8080/v1/merchant -H 'Authorization: Bearer sk_test_local_tienda_uno'
 ```
+
+### The web app
+
+[localhost:3000](http://localhost:3000) plays Tienda Uno SpA, the demo merchant. Its server holds the merchant's secret key. The card is typed into the acquirer's own fields, in an iframe, so the merchant's page and server only ever see a token.
+
+- **Pago de prueba** (`/checkout`): pays an order with a card, typed or chosen among the test cards inside the iframe, and shows the payment. When the answer is `202`, the page follows it until it is final. Sending the form twice gets the same payment back: the form keeps its idempotency key, and the iframe its token.
+- **Pagos** (`/`): the merchant's payments, with filters by status and order, and each payment's history: its attempts, their outcome and latency, and its reversal.
+- **Webhooks** (`/webhooks`): what the endpoint received, with the signature verified, and a switch that makes the endpoint answer `500`, to watch the retries.
+- **Adquirente** (`/acquirer`): the simulator's faults (latency, errors, late answers, down) and its book.
+
+The interface is in Spanish, as the merchants it plays are in Chile.
 
 ### Payments
 
@@ -84,7 +96,7 @@ While the simulator is down, the services inside Compose get "connection refused
 
 Every final payment produces one webhook to its merchant's endpoint: a `POST` with the event as its body, its id in `Webhook-Id`, and `Webhook-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">`. A receiver checks the signature with its secret, rejects timestamps more than 5 minutes away, and discards an id it already processed. A webhook that is not answered with a `2xx` is sent again, from 10 s up to every hour, for 24 hours.
 
-Compose points the local endpoints at the web app, which arrives in step 8; until then their attempts fail and are retried. The secrets are for local development only.
+Compose points the local endpoints at the web app, which checks each signature and lists what it received at [localhost:3000/webhooks](http://localhost:3000/webhooks). The secrets are for local development only.
 
 | Merchant | Webhook secret |
 |---|---|
@@ -102,7 +114,9 @@ docker compose exec postgres psql -U webhooks -d webhooks \
 ```bash
 make test              # unit tests, no Docker needed
 make test-integration  # every test, with Postgres in a container
-make ci                # formatting, linters, every test and govulncheck, as in CI
+make web               # the web app's tests and build, with its type check
+cd web && npm run e2e  # the browser tests, against `docker compose up` (PW_CHANNEL=chrome uses your Chrome)
+make ci                # formatting, linters, every test, govulncheck and the web app, as in CI
 ```
 
 ## Plan
@@ -117,7 +131,7 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | 5. Authorization in the request | Done |
 | 6. Recovery | Done |
 | 7. Webhooks | Done |
-| 8. Checkout and panel | Not started |
+| 8. Checkout and panel | Done |
 | 9. Proof | Not started |
 
 What each step delivers is in the [RFC](docs/rfc/0001-architecture.md#17-plan).
@@ -130,4 +144,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery and the webhooks are implemented; everything else is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers.
+Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery, the webhooks and the web app are implemented; the proof under load is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers. And it walks the web app in a browser: a payment made and followed, a card number that never reaches the merchant, the webhooks with their retries, and the acquirer down.

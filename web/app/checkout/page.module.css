@@ -1,0 +1,94 @@
+.back {
+  display: inline-block;
+  margin: 8px 0 16px;
+  color: var(--text-3);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--text);
+}
+
+.heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+
+.form {
+  max-width: 560px;
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.field .input {
+  width: 100%;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.error {
+  border-radius: var(--radius-sm);
+  background: var(--failed-bg);
+  color: var(--failed);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.error ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.key {
+  font-size: 12px;
+  color: var(--text-3);
+  padding-top: 12px;
+}
+
+.footer :global(.button) {
+  margin-top: 12px;
+  min-width: 96px;
+}
+
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.cardFrame {
+  width: 100%;
+  border: 0;
+  display: block;
+}

@@ -10,6 +10,14 @@ updates:
       testcontainers:
         patterns: ["github.com/testcontainers/*"]
 
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      next:
+        patterns: ["next", "react", "react-dom", "@types/react", "@types/react-dom"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

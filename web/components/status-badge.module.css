@@ -1,0 +1,48 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.live::before {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.APPROVED {
+  background: var(--approved-bg);
+  color: var(--approved);
+}
+
+.DECLINED {
+  background: var(--declined-bg);
+  color: var(--declined);
+}
+
+.FAILED {
+  background: var(--failed-bg);
+  color: var(--failed);
+}
+
+.PROCESSING {
+  background: var(--processing-bg);
+  color: var(--processing);
+}

@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery and the webhooks as built in steps 6 and 7 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery, the webhooks and the web app as built in steps 6 to 8 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 
@@ -286,6 +286,7 @@ The simulator listens on two ports. The public one serves browsers, `payments-ap
 
 | Endpoint | Caller | Behavior |
 |---|---|---|
+| `GET /v1/fields` | A merchant's checkout, in an iframe | The card fields: number, expiry and CVC, and the test cards. The page tokenizes the card on the acquirer's origin and hands the merchant only the token, with `postMessage` to the origin the merchant declared. It needs the publishable key and an allowed origin, which is also its only `frame-ancestors`, and its CSP allows no inline code. |
 | `POST /v1/tokens` | The browser, with a publishable key | Card number, expiry and CVC in; token, brand and last 4 out. Rejects numbers that fail the Luhn check and expired cards. A token lasts 1 hour and pays for a single authorization key. |
 | `POST /v1/authorizations` | `payments-api` and `payments-worker`, with a secret key and an `Idempotency-Key` | Token, amount, currency and merchant reference in. Answers approved with an authorization code, or declined with a code, plus the card summary. The decision is recorded before the answer is sent, so a client that times out finds it on its retry. The same key gets the same answer, with `Idempotent-Replayed: true`; the same key with a different request answers `422 idempotency_key_reused`; and a reversed key answers `409 reversed`. |
 | `POST /v1/authorizations/{key}/reversal` | `payments-api` and `payments-worker`, with a secret key | Releases the authorization if there is one, and leaves a tombstone so the key can never be authorized. It is idempotent and also works for a key it never saw. |
@@ -357,10 +358,12 @@ Location: /v1/payments/01a187cb…
 
 ## 12. Checkout and panel
 
-- A Next.js app. Its server calls the API with the demo merchant's secret key, so the browser never holds it. The browser talks only to the acquirer, to tokenize the card.
-- The checkout shows the result as soon as the API answers. When the answer is `202`, it shows that the payment is processing and refreshes until it is final.
-- Pages: the checkout, the payment list, the detail of a payment with its history, the webhooks received, and the acquirer controls.
-- The webhooks arrive at a route of the app, which checks their signature and keeps the latest ones in memory.
+- A Next.js app, ported from v1, that plays the demo merchant. Its interface is in Spanish. Its server calls the API with the merchant's secret key, from a module the browser cannot import, so the browser never holds the key.
+- **The card never touches the merchant.** The checkout embeds the acquirer's card fields in an iframe (section 10), as hosted card fields do in real payment pages. The cardholder types the card on the acquirer's origin, and the checkout asks the iframe for a token with `postMessage`, checking the origin and the window of every message. Neither the merchant's server nor the code of its page ever reads the number (NFR06).
+- The checkout shows the result as soon as the API answers. When the answer is `202`, the payment's page asks for it again every second for half a minute, then every 5 s, and waits while the tab is hidden. The webhook is for the merchant's server, to fulfil the order; the page does not depend on it, so a delayed webhook never delays the page.
+- Each visit to the checkout has its own idempotency key and order, and the iframe keeps the token of the card while the page lives. Sending the form again sends the same request, so it gets the same payment back.
+- Pages: the checkout, the payment list with its filters and cursor pages, the detail of a payment with its history, the webhooks received, and the acquirer's faults and book.
+- The webhooks arrive at a route of the app. It reads the raw body, checks the signature with the secret of the merchant the body names, rejects timestamps more than 5 minutes away, counts a repeated `Webhook-Id` as a duplicate, and keeps the latest 100 in memory. A switch makes it answer `500`, to show the retries.
 
 ## 13. Observability
 
@@ -384,6 +387,7 @@ Location: /v1/payments/01a187cb…
 | Integration | Postgres adapters, the acquirer client, the relay and the consumers, against real Postgres, Kafka and the simulator | testcontainers-go |
 | End-to-end | The PRD scenarios against the full local environment, with the simulator's faults | `go test` against Compose |
 | Consistency | The invariants after a load test with faults | a checker that compares the database, the simulator's book and the webhooks received |
+| Browser | A person's path through the web app: the checkout, a payment in doubt followed until it is final, the card never reaching the merchant, the webhooks and their retries, the acquirer down, and no console warnings | Playwright, against Compose |
 | Load | NFR01 and NFR02 | k6 |
 
 How each invariant is guaranteed and tested:

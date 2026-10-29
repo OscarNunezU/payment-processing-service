@@ -220,5 +220,35 @@ services:
       retries: 20
     stop_grace_period: 30s
 
+  # The web app that plays the merchant: the checkout, the panel, and the
+  # endpoint of the webhooks (RFC 0001, section 12). Keys for local
+  # development only.
+  web:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      # Only the app's server reaches the API, with the merchant's secret key.
+      API_URL: http://payments-api:8080
+      MERCHANT_API_KEY: sk_test_local_tienda_uno
+      # The browser tokenizes at the acquirer's public port, from the host.
+      ACQUIRER_PUBLIC_URL: http://localhost:8090
+      ACQUIRER_PUBLISHABLE_KEY: pk_sim_local_only
+      ACQUIRER_ADMIN_URL: http://acquirer-sim:8091
+      WEBHOOK_SECRETS: >-
+        00000000-0000-4000-8000-000000000001=whsec_local_only_tienda_uno,00000000-0000-4000-8000-000000000002=whsec_local_only_tienda_dos,00000000-0000-4000-8000-000000000003=whsec_local_only_suspendida
+    ports:
+      - "3000:3000"
+    depends_on:
+      payments-api:
+        condition: service_healthy
+      acquirer-sim:
+        condition: service_healthy
+    healthcheck:
+      # Distroless has no shell or curl: node itself asks.
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://localhost:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   postgres-data:

@@ -8,7 +8,7 @@ BIN           := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
 GOVULNCHECK   := $(BIN)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
 
-.PHONY: help fmt lint test test-integration vulncheck ci up down logs
+.PHONY: help fmt lint test test-integration vulncheck web ci up down logs
 
 help: ## Show the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -29,7 +29,10 @@ test-integration: ## Run every test, starting Postgres in a container
 vulncheck: $(GOVULNCHECK) ## Check dependencies and the standard library for known vulnerabilities
 	$(GOVULNCHECK) ./...
 
-ci: fmt lint test-integration vulncheck ## Run what CI runs
+web: ## Test and build the web app, with its type check
+	cd web && npm ci --no-audit --no-fund && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build
+
+ci: fmt lint test-integration vulncheck web ## Run what CI runs
 
 up: ## Start the local environment and wait until it is healthy
 	docker compose up --build --wait
