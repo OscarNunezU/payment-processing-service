@@ -56,17 +56,21 @@ func loadSettings(env *config.Env) (settings, error) {
 }
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx, config.FromOS())
+	stop()
+	if err != nil {
 		slog.Error(service+" stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+// run works until ctx ends, or until the probes stop serving.
+func run(ctx context.Context, env *config.Env) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	s, err := loadSettings(config.FromOS())
+	s, err := loadSettings(env)
 	if err != nil {
 		return fmt.Errorf("configuration: %w", err)
 	}
@@ -115,6 +119,9 @@ func run() error {
 
 	log.Info("running", "probes", s.httpAddr, "version", s.version)
 	err = httpx.Serve(ctx, httpx.NewServer(s.httpAddr, handler), s.shutdownGrace)
+	// The relay stops with the probes, also when they could not start: a
+	// worker that cannot be probed must exit, so it gets restarted.
+	cancel()
 	wg.Wait()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
