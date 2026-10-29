@@ -121,6 +121,32 @@ func TestUnavailableOnlyTheFirstTime(t *testing.T) {
 	}
 }
 
+func TestARetryAfterARefusalMustBeTheSameRequest(t *testing.T) {
+	for _, number := range []string{"4000000000000127", "4000000000000119", "4000000000000143"} {
+		b, tk, _ := newTestBook(t)
+		req := request(tk, "k1", number)
+		if _, err := b.Authorize(req); err == nil {
+			t.Fatalf("%s: the first attempt was accepted, want it refused or rejected", number)
+		}
+		changed := req
+		changed.Amount++
+		if _, err := b.Authorize(changed); !errors.Is(err, errKeyReused) {
+			t.Errorf("%s: a retry with another amount got %v, want errKeyReused", number, err)
+		}
+	}
+}
+
+func TestAnInvalidTokenDoesNotBindTheKey(t *testing.T) {
+	b, tk, _ := newTestBook(t)
+	bad := AuthorizeRequest{Key: "k1", Token: "tok_nope", Amount: 15000, Currency: "CLP", Reference: "order-1"}
+	if _, err := b.Authorize(bad); !errors.Is(err, errTokenUnknown) {
+		t.Fatalf("got %v, want errTokenUnknown", err)
+	}
+	if _, err := b.Authorize(request(tk, "k1", "4111111111111111")); err != nil {
+		t.Errorf("the corrected request with the same key: got %v, want it accepted", err)
+	}
+}
+
 func TestARejectedRequestRecordsNothing(t *testing.T) {
 	b, tk, _ := newTestBook(t)
 	if _, err := b.Authorize(request(tk, "k1", "4000000000000143")); !errors.Is(err, errRejected) {

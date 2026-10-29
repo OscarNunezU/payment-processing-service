@@ -86,14 +86,20 @@ type authorization struct {
 type Book struct {
 	mu      sync.Mutex
 	entries map[string]*Entry
-	// refused counts the 503 answers given to each key, for unavailableOnce.
-	refused map[string]int
-	tokens  *tokens
-	now     func() time.Time
+	// undecided holds the keys that reached the book but were refused or
+	// rejected, so that their retries must still be the same request.
+	undecided map[string]*undecided
+	tokens    *tokens
+	now       func() time.Time
+}
+
+type undecided struct {
+	hash     [sha256.Size]byte
+	refusals int
 }
 
 func newBook(t *tokens, now func() time.Time) *Book {
-	return &Book{entries: make(map[string]*Entry), refused: make(map[string]int), tokens: t, now: now}
+	return &Book{entries: make(map[string]*Entry), undecided: make(map[string]*undecided), tokens: t, now: now}
 }
 
 // Authorize decides r, or returns the answer already given to its key. The
@@ -113,22 +119,35 @@ func (b *Book) Authorize(r AuthorizeRequest) (authorization, error) {
 		}
 		return authorization{entry: *e, replayed: true}, nil
 	}
+	u, seen := b.undecided[r.Key]
+	if seen && u.hash != hash {
+		return authorization{}, errKeyReused
+	}
 
+	// An invalid token is a request that never started, so it does not bind
+	// the key: the client may fix it and retry with the same key.
 	c, err := b.tokens.use(r.Token, r.Key)
 	if err != nil {
 		return authorization{}, err
 	}
+	if !seen {
+		u = &undecided{hash: hash}
+	}
 	switch c.behavior() {
 	case unavailable:
+		b.undecided[r.Key] = u
 		return authorization{}, errUnavailable
 	case unavailableOnce:
-		if b.refused[r.Key] == 0 {
-			b.refused[r.Key]++
+		if u.refusals == 0 {
+			u.refusals++
+			b.undecided[r.Key] = u
 			return authorization{}, errUnavailable
 		}
 	case rejectRequest:
+		b.undecided[r.Key] = u
 		return authorization{}, errRejected
 	}
+	delete(b.undecided, r.Key)
 
 	e := &Entry{
 		Key:       r.Key,
@@ -166,6 +185,7 @@ func (b *Book) Reverse(key string) Entry {
 	if !ok {
 		e = &Entry{Key: key, Outcome: None, CreatedAt: now}
 		b.entries[key] = e
+		delete(b.undecided, key)
 	}
 	if !e.Reversed {
 		e.Reversed, e.ReversedAt = true, &now
