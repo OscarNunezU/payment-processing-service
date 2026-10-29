@@ -14,7 +14,7 @@ help: ## Show the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
 fmt: ## Fail if a file is not formatted
-	@unformatted=$$(gofmt -l cmd internal migrations); \
+	@unformatted=$$(gofmt -l cmd internal migrations tests); \
 	if [ -n "$$unformatted" ]; then echo "not formatted:"; echo "$$unformatted"; exit 1; fi
 
 lint: $(GOLANGCI_LINT) ## Run the linters

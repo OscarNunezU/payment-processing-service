@@ -53,6 +53,24 @@ services:
       retries: 20
       start_period: 10s
 
+  # The topics, with their partitions and retention (RFC 0001, section 8.1).
+  # Creating them again changes nothing.
+  kafka-topics:
+    image: apache/kafka:4.1.1
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        topics=/opt/kafka/bin/kafka-topics.sh
+        $$topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.events.v1 \
+          --partitions 24 --replication-factor 1 --config retention.ms=604800000
+        $$topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.dlq.v1 \
+          --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+    depends_on:
+      kafka:
+        condition: service_healthy
+
   jaeger:
     image: jaegertracing/jaeger:2.11.0
     ports:
@@ -67,8 +85,8 @@ services:
       ACQUIRER_PUBLISHABLE_KEY: pk_sim_local_only
       ALLOWED_ORIGINS: http://localhost:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
-    # 8090 is the public port, for browsers and payments-worker. 8091 serves
-    # the book and the faults, and keeps working while 8090 is down.
+    # 8090 is the public port, for browsers and the payments services. 8091
+    # serves the book and the faults, and keeps working while 8090 is down.
     ports:
       - "8090:8090"
       - "8091:8091"
@@ -108,12 +126,16 @@ services:
     environment:
       HTTP_ADDR: ":8080"
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+      ACQUIRER_URL: http://acquirer-sim:8090
+      ACQUIRER_SECRET_KEY: sk_sim_local_only
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     ports:
       - "8080:8080"
     depends_on:
       seed-payments:
         condition: service_completed_successfully
+      acquirer-sim:
+        condition: service_healthy
       jaeger:
         condition: service_started
     healthcheck:
@@ -122,6 +144,29 @@ services:
       timeout: 3s
       retries: 20
     # In-flight requests get 20 s to finish, plus a margin (RFC 0001, section 5.6).
+    stop_grace_period: 30s
+
+  # The relay, and from step 6 the recovery. Its probes listen on 8081.
+  payments-worker:
+    <<: *go-service
+    command: ["/payments-worker"]
+    environment:
+      HTTP_ADDR: ":8081"
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+    depends_on:
+      migrate-payments:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://localhost:8081/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     stop_grace_period: 30s
 
 volumes:
