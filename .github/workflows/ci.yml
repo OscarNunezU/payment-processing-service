@@ -59,6 +59,14 @@ jobs:
         run: docker compose up --build --wait
       - name: Check readiness
         run: curl --fail --silent --show-error localhost:8080/readyz
+      - name: Authorize a test card at the acquirer simulator
+        run: |
+          token=$(curl --fail --silent --show-error localhost:8090/v1/tokens \
+            -H 'Authorization: Bearer pk_sim_local_only' \
+            -d '{"number":"4111111111111111","exp_month":12,"exp_year":2035,"cvc":"123"}' | jq -r .token)
+          curl --fail --silent --show-error localhost:8090/v1/authorizations \
+            -H 'Authorization: Bearer sk_sim_local_only' -H 'Idempotency-Key: ci-1' \
+            -d "{\"token\":\"$token\",\"amount\":15000,\"currency\":\"CLP\"}" | jq -e '.status == "approved"'
       - name: Show the logs
         if: failure()
         run: docker compose logs
