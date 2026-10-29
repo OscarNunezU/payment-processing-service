@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, and the recovery, which finishes or reverses the payments whose answer was not clear.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, the recovery, which finishes or reverses the payments whose answer was not clear, and the signed webhooks with their retries. The web app that receives the webhooks locally arrives in step 8.
 
 ## Documents
 
@@ -80,6 +80,23 @@ curl -s -X PUT localhost:8091/admin/faults -d '{}'                        # back
 
 While the simulator is down, the services inside Compose get "connection refused". From the host, Docker's port forwarding accepts the connection first, so the same fault shows up as a connection reset.
 
+### Webhooks
+
+Every final payment produces one webhook to its merchant's endpoint: a `POST` with the event as its body, its id in `Webhook-Id`, and `Webhook-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">`. A receiver checks the signature with its secret, rejects timestamps more than 5 minutes away, and discards an id it already processed. A webhook that is not answered with a `2xx` is sent again, from 10 s up to every hour, for 24 hours.
+
+Compose points the local endpoints at the web app, which arrives in step 8; until then their attempts fail and are retried. The secrets are for local development only.
+
+| Merchant | Webhook secret |
+|---|---|
+| Tienda Uno SpA | `whsec_local_only_tienda_uno` |
+| Tienda Dos Limitada | `whsec_local_only_tienda_dos` |
+| Comercio Suspendido SpA | `whsec_local_only_suspendida` |
+
+```bash
+docker compose exec postgres psql -U webhooks -d webhooks \
+  -c 'SELECT event_type, status, attempts, last_error, next_attempt_at FROM deliveries'
+```
+
 ## Checks
 
 ```bash
@@ -99,7 +116,7 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 | 4. Accepting and querying payments | Done |
 | 5. Authorization in the request | Done |
 | 6. Recovery | Done |
-| 7. Webhooks | Not started |
+| 7. Webhooks | Done |
 | 8. Checkout and panel | Not started |
 | 9. Proof | Not started |
 
@@ -113,4 +130,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay and the recovery are implemented; everything else is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers.
+Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery and the webhooks are implemented; everything else is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers.
