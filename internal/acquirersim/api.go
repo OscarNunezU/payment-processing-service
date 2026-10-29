@@ -64,9 +64,12 @@ func New(cfg Config, log *slog.Logger) *Simulator {
 // before the admin handler serves.
 func (s *Simulator) Attach(public *Switch) { s.public = public }
 
-// PublicHandler serves tokens, authorizations and reversals.
+// PublicHandler serves the card fields, tokens, authorizations and reversals.
 func (s *Simulator) PublicHandler() http.Handler {
 	mux := http.NewServeMux()
+	httpx.Handle(mux, "GET /v1/fields", http.HandlerFunc(s.fields))
+	httpx.Handle(mux, "GET /v1/fields.js", fieldsAsset("fields.js", "text/javascript; charset=utf-8"))
+	httpx.Handle(mux, "GET /v1/fields.css", fieldsAsset("fields.css", "text/css; charset=utf-8"))
 	httpx.Handle(mux, "OPTIONS /v1/tokens", http.HandlerFunc(s.preflight))
 	httpx.Handle(mux, "POST /v1/tokens", s.withKey(s.cfg.PublishableKey, http.HandlerFunc(s.createToken)))
 	httpx.Handle(mux, "POST /v1/authorizations", s.withKey(s.cfg.SecretKey, http.HandlerFunc(s.authorize)))

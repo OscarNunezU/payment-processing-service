@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="es"{{if .Theme}} data-theme="{{.Theme}}"{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datos de la tarjeta</title>
+<link rel="stylesheet" href="/v1/fields.css">
+</head>
+<body data-origin="{{.Origin}}" data-key="{{.Key}}">
+<form id="card" novalidate>
+  <label>Número de tarjeta
+    <input id="number" inputmode="numeric" autocomplete="cc-number" placeholder="4111 1111 1111 1111" maxlength="23">
+  </label>
+  <div class="row">
+    <label>Vencimiento
+      <input id="expiry" inputmode="numeric" autocomplete="cc-exp" placeholder="MM/AA" maxlength="5">
+    </label>
+    <label>CVC
+      <input id="cvc" inputmode="numeric" autocomplete="cc-csc" placeholder="123" maxlength="4">
+    </label>
+  </div>
+  <label>Tarjetas de prueba
+    <select id="test-card">
+      <option value="">Escribe una, o elige una de prueba</option>
+      {{range .TestCards}}<option value="{{.Number}}">•••• {{.Last4}} · {{.Label}}</option>
+      {{end}}
+    </select>
+  </label>
+  <p id="error" role="alert"></p>
+</form>
+<p class="note">La tarjeta va directo al adquirente: la tienda solo recibe un token.</p>
+<script src="/v1/fields.js"></script>
+</body>
+</html>
