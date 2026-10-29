@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,13 +93,17 @@ func NewService(d Deps) *Service { return &Service{d: d} }
 // endpoint (RFC 0001, section 9). The event id is unique among deliveries, so
 // an event that arrives twice is delivered once. An event of a merchant
 // without an endpoint, or of a type that is not a webhook, is skipped.
+//
+// Everything the database would reject is checked first: an event it cannot
+// store is undecodable, and goes to the dead-letter topic, instead of being
+// retried forever and blocking the events behind it.
 func (s *Service) Ingest(ctx context.Context, m Message) error {
 	var e events.PaymentEvent
 	if err := json.Unmarshal(m.Payload, &e); err != nil {
 		return fmt.Errorf("%w: %w", ErrUndecodable, err)
 	}
-	if e.ID == "" || e.MerchantID == "" {
-		return fmt.Errorf("%w: the event has no id or no merchant", ErrUndecodable)
+	if !domain.IsID(e.ID) || !domain.IsID(e.MerchantID) {
+		return fmt.Errorf("%w: the event id %q or the merchant id %q is not an id", ErrUndecodable, e.ID, e.MerchantID)
 	}
 	switch e.Type {
 	case events.PaymentApproved, events.PaymentDeclined, events.PaymentFailed:
@@ -114,7 +119,7 @@ func (s *Service) Ingest(ctx context.Context, m Message) error {
 	case err != nil:
 		return err
 	}
-	d := domain.NewDelivery(s.d.NewID(), e.ID, string(e.Type), e.MerchantID, m.Payload, m.Traceparent, s.now())
+	d := domain.NewDelivery(s.d.NewID(), e.ID, string(e.Type), e.MerchantID, m.Payload, traceparent(m.Traceparent), s.now())
 	created, err := s.d.Store.AddDelivery(ctx, d)
 	if err != nil {
 		return err
@@ -169,6 +174,22 @@ func (s *Service) deliver(ctx context.Context, due Due) {
 		log.InfoContext(ctx, "a webhook was not accepted; it will be sent again",
 			"status", a.StatusCode, "error", a.Error, "next_attempt_at", next.NextAttemptAt)
 	}
+}
+
+// traceparent returns tp if it is a W3C traceparent of version 00, and ""
+// otherwise. It comes from a Kafka header, which may hold anything, and the
+// trace is not worth losing the webhook for.
+func traceparent(tp string) string {
+	if len(tp) != 55 || tp[:3] != "00-" || tp[35] != '-' || tp[52] != '-' || tp[3:35] == strings.Repeat("0", 32) {
+		return ""
+	}
+	for i := 3; i < len(tp); i++ {
+		c := tp[i]
+		if i != 35 && i != 52 && (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return tp
 }
 
 // now is the time in UTC, to the microsecond, as Postgres keeps it.

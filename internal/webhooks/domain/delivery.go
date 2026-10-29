@@ -6,6 +6,7 @@ package domain
 import (
 	"errors"
 	"time"
+	"uuid"
 )
 
 // The delivery policy (RFC 0001, section 9).
@@ -26,6 +27,13 @@ const (
 
 // ErrNotFound means the record does not exist.
 var ErrNotFound = errors.New("not found")
+
+// IsID reports whether s is an id as the services write them: a UUID in its
+// canonical form.
+func IsID(s string) bool {
+	u, err := uuid.Parse(s)
+	return err == nil && u.String() == s
+}
 
 // Endpoint is where a merchant receives its webhooks, and the secret that
 // signs them.

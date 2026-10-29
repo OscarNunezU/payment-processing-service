@@ -110,7 +110,9 @@ func TestEachEventBecomesOneDeliveryAndBadOnesGoToTheDeadLetterTopic(t *testing.
 	brokers := cluster(t)
 	store := apptest.NewStore(domain.Endpoint{MerchantID: merchantID, URL: "http://web/webhooks", Secret: "whsec_test_0123456789abcdefgh"})
 	e1, e2 := uuid.NewV7().String(), uuid.NewV7().String()
-	publish(t, brokers, event(e1), `<html>`, event(e1), event(e2))
+	// An event that cannot be read, and one the database would reject, come
+	// before e2: neither may hold it up.
+	publish(t, brokers, event(e1), `<html>`, event(e1), event("not-a-uuid"), event(e2))
 	stop := consume(t, brokers, service(store))
 
 	eventually(t, "two deliveries", func() bool { return len(store.Deliveries()) == 2 })
@@ -121,18 +123,23 @@ func TestEachEventBecomesOneDeliveryAndBadOnesGoToTheDeadLetterTopic(t *testing.
 	dlq := client(t, brokers, kgo.ConsumeTopics(kafka.DeadLetterTopic), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	records := dlq.PollFetches(ctx).Records()
-	if len(records) != 1 || string(records[0].Value) != `<html>` {
-		t.Fatalf("the dead-letter topic has %d records, want the one that cannot be decoded", len(records))
+	var records []*kgo.Record
+	for len(records) < 2 && ctx.Err() == nil {
+		records = append(records, dlq.PollFetches(ctx).Records()...)
 	}
-	reason := ""
-	for _, h := range records[0].Headers {
-		if h.Key == "dlq-reason" {
-			reason = string(h.Value)
+	if len(records) != 2 || string(records[0].Value) != `<html>` || string(records[1].Value) != event("not-a-uuid") {
+		t.Fatalf("the dead-letter topic has %d records, want the two bad ones", len(records))
+	}
+	for _, r := range records {
+		reason := ""
+		for _, h := range r.Headers {
+			if h.Key == "dlq-reason" {
+				reason = string(h.Value)
+			}
 		}
-	}
-	if reason == "" {
-		t.Error("the dead letter does not say why it is there")
+		if reason == "" {
+			t.Errorf("the dead letter %s does not say why it is there", r.Value)
+		}
 	}
 
 	// The offsets were committed: the group's next consumer reads nothing
