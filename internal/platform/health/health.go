@@ -15,7 +15,7 @@ import (
 // Check is a dependency the readiness endpoint reports on. When a critical
 // check fails, the instance is unready and stops receiving traffic. A
 // non-critical check is only reported: it is for dependencies the service can
-// work without, such as Kafka for payments-worker, whose sweeper keeps going
+// work without, such as Kafka for payments-worker, whose recovery keeps going
 // while Kafka is down (RFC 0001, section 5.5).
 type Check struct {
 	Name     string

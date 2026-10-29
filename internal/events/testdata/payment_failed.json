@@ -1,0 +1,17 @@
+{
+  "id": "0199b5a2-7c1e-7d3a-9f00-0000000000e3",
+  "type": "payment.failed",
+  "payment_id": "0199b5a2-7c1e-7d3a-9f00-0000000000a2",
+  "merchant_id": "00000000-0000-4000-8000-000000000001",
+  "occurred_at": "2026-10-28T19:02:16.314Z",
+  "data": {
+    "id": "0199b5a2-7c1e-7d3a-9f00-0000000000a2",
+    "order_id": "1002",
+    "status": "FAILED",
+    "amount": 15000,
+    "currency": "CLP",
+    "reason": "acquirer_unavailable",
+    "created_at": "2026-10-28T19:02:11.314Z",
+    "updated_at": "2026-10-28T19:02:16.314Z"
+  }
+}

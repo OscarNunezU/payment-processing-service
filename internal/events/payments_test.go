@@ -18,15 +18,6 @@ var update = flag.Bool("update", false, "rewrite the golden files with the curre
 func TestEventsMatchTheirGoldenFiles(t *testing.T) {
 	at := time.Date(2026, 10, 28, 19, 2, 11, 314_000_000, time.UTC)
 	tests := map[string]PaymentEvent{
-		"payment_accepted.json": {
-			ID: "0199b5a2-7c1e-7d3a-9f00-0000000000e1", Type: PaymentAccepted,
-			PaymentID: "0199b5a2-7c1e-7d3a-9f00-0000000000a1", MerchantID: "00000000-0000-4000-8000-000000000001",
-			OccurredAt: at,
-			Data: Payment{
-				ID: "0199b5a2-7c1e-7d3a-9f00-0000000000a1", OrderID: "1001", Status: "PENDING",
-				Amount: 15000, Currency: "CLP", CreatedAt: at, UpdatedAt: at,
-			},
-		},
 		"payment_approved.json": {
 			ID: "0199b5a2-7c1e-7d3a-9f00-0000000000e2", Type: PaymentApproved,
 			PaymentID: "0199b5a2-7c1e-7d3a-9f00-0000000000a1", MerchantID: "00000000-0000-4000-8000-000000000001",
@@ -35,6 +26,16 @@ func TestEventsMatchTheirGoldenFiles(t *testing.T) {
 				ID: "0199b5a2-7c1e-7d3a-9f00-0000000000a1", OrderID: "1001", Status: "APPROVED",
 				Amount: 15000, Currency: "CLP", Card: &Card{Brand: "visa", Last4: "1111"},
 				AuthorizationCode: "7T4N4V", CreatedAt: at, UpdatedAt: at.Add(300 * time.Millisecond),
+			},
+		},
+		"payment_failed.json": {
+			ID: "0199b5a2-7c1e-7d3a-9f00-0000000000e3", Type: PaymentFailed,
+			PaymentID: "0199b5a2-7c1e-7d3a-9f00-0000000000a2", MerchantID: "00000000-0000-4000-8000-000000000001",
+			OccurredAt: at.Add(5 * time.Second),
+			Data: Payment{
+				ID: "0199b5a2-7c1e-7d3a-9f00-0000000000a2", OrderID: "1002", Status: "FAILED",
+				Amount: 15000, Currency: "CLP", Reason: "acquirer_unavailable",
+				CreatedAt: at, UpdatedAt: at.Add(5 * time.Second),
 			},
 		},
 	}

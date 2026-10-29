@@ -84,9 +84,10 @@ func toPaymentResponse(p domain.Payment) paymentResponse {
 	return resp
 }
 
-// createPayment accepts a payment and answers 202: the acquirer is called
-// afterwards, in the background (RFC 0001, section 5.1). A replay answers the
-// same way, with the payment in its current state.
+// createPayment creates a payment and authorizes it in the request (RFC 0001,
+// section 5.1). It answers 201 when the payment is final and 202 while it is
+// still PROCESSING; a replay answers the same way, by the payment's current
+// state.
 func (a *API) createPayment(w http.ResponseWriter, r *http.Request, m domain.Merchant) {
 	var body createPaymentRequest
 	if !decodeStrict(w, r, &body) {
@@ -112,7 +113,11 @@ func (a *API) createPayment(w http.ResponseWriter, r *http.Request, m domain.Mer
 	}
 	a.log.InfoContext(r.Context(), msg, "payment_id", p.ID, "merchant_id", m.ID, "order_id", p.OrderID, "status", p.Status)
 	w.Header().Set("Location", "/v1/payments/"+p.ID)
-	httpx.WriteJSON(w, http.StatusAccepted, toPaymentResponse(p))
+	status := http.StatusAccepted
+	if p.Status.Final() {
+		status = http.StatusCreated
+	}
+	httpx.WriteJSON(w, status, toPaymentResponse(p))
 }
 
 func (a *API) getPayment(w http.ResponseWriter, r *http.Request, m domain.Merchant) {
@@ -191,6 +196,10 @@ func (a *API) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, domain.ErrInvalidStatus):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_status",
 			"status must be PENDING, PROCESSING, APPROVED, DECLINED or FAILED.")
+	case errors.Is(err, app.ErrAcquirerUnavailable):
+		w.Header().Set("Retry-After", "5")
+		httpx.WriteError(w, http.StatusServiceUnavailable, "acquirer_unavailable",
+			"The acquirer is not taking payments right now. Nothing was created: retry with the same Idempotency-Key.")
 	case errors.Is(err, app.ErrInvalidCursor):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_cursor", "starting_after must be the id of a payment.")
 	default:

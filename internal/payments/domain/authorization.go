@@ -60,6 +60,34 @@ type Answer struct {
 	Latency      time.Duration
 }
 
+// WithAnswer returns the payment after the answer to its current attempt. A
+// definite answer makes it final. Any other keeps it PROCESSING and moves its
+// lease to the end of the wait before the next attempt, so the recovery picks
+// it up then. random returns a number in [0, 1), for the jitter.
+func (p Payment) WithAnswer(a Answer, now time.Time, random func() float64) Payment {
+	p.UpdatedAt = now
+	switch a.Outcome {
+	case OutcomeApproved:
+		p.Status, p.AuthorizationCode = PaymentApproved, a.AuthorizationCode
+	case OutcomeDeclined:
+		p.Status, p.DeclineCode = PaymentDeclined, a.DeclineCode
+	case OutcomeRejected:
+		p.Status, p.Reason = PaymentFailed, ReasonAcquirerRejected
+	case OutcomeReversed:
+		// Only a reversal leaves a key reversed, and a reversal releases
+		// whatever the key held.
+		p.Status, p.Reason = PaymentFailed, ReasonAcquirerUnavailable
+	default:
+		p.LeaseUntil = now.Add(Backoff(p.Attempts, random))
+		return p
+	}
+	if a.CardLast4 != "" {
+		p.CardBrand, p.CardLast4 = a.CardBrand, a.CardLast4
+	}
+	p.LeaseUntil = time.Time{}
+	return p
+}
+
 // Backoff is the wait after attempt n before the next one: it doubles from a
 // 2 s base, with half of it random, so payments that failed together do not
 // retry together. Attempt 1 waits 1–2 s, attempt 2 waits 2–4 s.
