@@ -5,3 +5,7 @@ next-env.d.ts
 !.env.example
 Dockerfile
 .dockerignore
+e2e
+playwright.config.ts
+playwright-report
+test-results

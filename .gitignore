@@ -13,6 +13,8 @@ node_modules/
 out/
 next-env.d.ts
 *.tsbuildinfo
+playwright-report/
+test-results/
 
 # Environment and secrets
 .env
