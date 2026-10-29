@@ -12,8 +12,8 @@ import (
 )
 
 // NewServer returns a server whose timeouts bound slow clients. The write
-// timeout leaves room for the 8 s deadline of the payment path (RFC 0001,
-// section 5.2).
+// timeout leaves room for the simulator's late answers, which come after the
+// 5 s that payments-worker waits (RFC 0001, section 5.6).
 func NewServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,

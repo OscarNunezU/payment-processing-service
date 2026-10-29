@@ -58,6 +58,29 @@ services:
     ports:
       - "16686:16686"
 
+  acquirer-sim:
+    <<: *go-service
+    command: ["/acquirer-sim"]
+    environment:
+      # Keys for local development only.
+      ACQUIRER_SECRET_KEY: sk_sim_local_only
+      ACQUIRER_PUBLISHABLE_KEY: pk_sim_local_only
+      ALLOWED_ORIGINS: http://localhost:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+    # 8090 is the public port, for browsers and payments-worker. 8091 serves
+    # the book and the faults, and keeps working while 8090 is down.
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+    depends_on:
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://localhost:8091/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   migrate-payments:
     <<: *go-service
     restart: "no"
