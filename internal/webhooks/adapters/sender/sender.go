@@ -30,7 +30,11 @@ type Sender struct {
 func New(timeout time.Duration) *Sender {
 	return &Sender{
 		http: &http.Client{
-			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			// The tracer provider is the global one, set explicitly: by
+			// default otelhttp takes the provider of the span in the
+			// request's context, and the span resumed from a delivery's
+			// trace is a remote one, whose provider records nothing.
+			Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithTracerProvider(otel.GetTracerProvider())),
 			// A redirect is not an answer: it counts as a failed attempt, and
 			// the webhook never goes to an address the merchant did not set.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

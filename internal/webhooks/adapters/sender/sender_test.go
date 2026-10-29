@@ -11,6 +11,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/OscarNunezU/payment-processing-service/internal/webhooks/app"
 )
@@ -22,6 +24,8 @@ func request(url string) app.Request {
 }
 
 func TestAWebhookCarriesItsIdSignatureAndTrace(t *testing.T) {
+	spans := tracetest.NewInMemoryExporter()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSyncer(spans)))
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	var got struct {
 		method, contentType, id, signature, trace, body string
@@ -44,6 +48,11 @@ func TestAWebhookCarriesItsIdSignatureAndTrace(t *testing.T) {
 	}
 	if !strings.Contains(got.trace, "4bf92f3577b34da6a3ce929d0e0e4736") {
 		t.Errorf("the webhook has trace %q, want the payment's trace", got.trace)
+	}
+	// The POST is also recorded, in the payment's trace, not only passed on.
+	exported := spans.GetSpans()
+	if len(exported) != 1 || exported[0].SpanContext.TraceID().String() != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("exported %d spans, want the POST's, in the payment's trace", len(exported))
 	}
 }
 
