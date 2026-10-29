@@ -61,6 +61,16 @@ func (e *Env) Duration(key string, def time.Duration) time.Duration {
 	return d
 }
 
+// DurationUpTo is Duration for a setting that must not exceed limit.
+func (e *Env) DurationUpTo(key string, def, limit time.Duration) time.Duration {
+	d := e.Duration(key, def)
+	if d > limit {
+		e.errs = append(e.errs, fmt.Errorf("%s must be at most %s, got %s", key, limit, d))
+		return def
+	}
+	return d
+}
+
 // Int returns an integer between 1 and limit, or def when key is unset.
 func (e *Env) Int(key string, def, limit int) int {
 	v, ok := e.get(key)

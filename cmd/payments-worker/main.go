@@ -59,9 +59,10 @@ func loadSettings(env *config.Env) (settings, error) {
 		kafkaBrokers: strings.Split(env.Required("KAFKA_BROKERS"), ","),
 		acquirerURL:  env.Required("ACQUIRER_URL"),
 		acquirerKey:  env.Required("ACQUIRER_SECRET_KEY"),
-		// The same timeout as the API's: the recovery's calls also end before
-		// the lease of their claim (RFC 0001, section 5.6).
-		acquirerTimeout: env.Duration("ACQUIRER_TIMEOUT", domain.AcquirerTimeout),
+		// The same timeout as the API's, and the same limit: the recovery's
+		// calls also end before the lease of their claim (RFC 0001, section
+		// 5.6).
+		acquirerTimeout: env.DurationUpTo("ACQUIRER_TIMEOUT", domain.AcquirerTimeout, domain.MaxAcquirerTimeout),
 		otlpEndpoint:    env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		version:         env.String("SERVICE_VERSION", "dev"),
 		logLevel:        env.LogLevel("LOG_LEVEL", slog.LevelInfo),

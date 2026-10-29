@@ -144,7 +144,7 @@ Every minute, it also raises an alert for any payment in `PROCESSING` for more t
 
 | Limit | Initial value |
 |---|---|
-| Acquirer call timeout | 5 s |
+| Acquirer call timeout | 5 s, and at most 10 s if configured |
 | Lease of a payment being authorized | 15 s |
 | Recovery scan | every second, up to 100 payments per claim |
 | Attempts without a definite answer | 3, the first in the request |
@@ -157,7 +157,7 @@ Every minute, it also raises an alert for any payment in `PROCESSING` for more t
 | Graceful shutdown | 20 s for each service |
 | Postgres statement and idle-in-transaction timeouts | 2 s and 5 s |
 
-The chain is 5 s < 15 s < 20 s: a call always ends before its lease expires, and a shutdown waits for the calls in flight. No transaction stays open during a call, so a slow acquirer never holds locks. The worst case for the merchant is a `202` about 5 s after the request.
+The chain is 5 s < 15 s < 20 s: a call always ends before its lease expires, and a shutdown waits for the calls in flight. The services refuse to start with a timeout above 10 s, so the lease also covers the writes before and after the call, each bounded by the 2 s statement timeout. No transaction stays open during a call, so a slow acquirer never holds locks. The worst case for the merchant is a `202` about 5 s after the request.
 
 ### 5.7 When something fails
 

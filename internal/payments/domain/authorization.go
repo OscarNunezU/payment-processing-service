@@ -6,9 +6,14 @@ import "time"
 const (
 	// AcquirerTimeout bounds each call to the acquirer.
 	AcquirerTimeout = 5 * time.Second
+	// MaxAcquirerTimeout is the longest the timeout may be configured. The
+	// lease must cover the call and the writes before and after it, each
+	// bounded by the database's statement timeout, so the call gets at most
+	// two thirds of the lease.
+	MaxAcquirerTimeout = 10 * time.Second
 	// Lease is how long a payment belongs to whoever is calling the acquirer
 	// for it. It is longer than a call, so a call always ends before its
-	// lease does.
+	// lease does, and no one else calls for the payment meanwhile.
 	Lease = 15 * time.Second
 	// MaxAttempts is how many calls a payment gets without a definite answer.
 	MaxAttempts = 3
