@@ -8,7 +8,7 @@ import (
 	"io/fs"
 )
 
-//go:embed payments
+//go:embed payments webhooks
 var all embed.FS
 
 // For returns the migrations of database.
