@@ -50,6 +50,29 @@ jobs:
         with:
           go-version-file: go.mod
 
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build, with the type check
+        run: npm run build
+      - name: Known vulnerabilities
+        run: npm audit --omit=dev
+
   compose:
     name: Local environment
     runs-on: ubuntu-latest
@@ -128,20 +151,47 @@ jobs:
           p=$(settle ci-never 60)
           jq -e '.status == "FAILED" and .reason == "acquirer_unavailable"' <<<"$p"
           book "$(jq -r .id <<<"$p")" | jq -e 'length == 1 and .[0].reversed and (.[0].live | not)'
-      # The webhooks (RFC 0001, section 9). The web app that receives them
-      # arrives in step 8: until then the attempts fail, and are retried.
-      - name: Every final payment becomes a webhook delivery
+      # The webhooks (RFC 0001, section 9), received by the web app, which
+      # answers 200 only to a valid signature.
+      - name: Every final payment is delivered as a signed webhook
         run: |
           sql() { docker compose exec -T postgres psql -U "$1" -d "$1" -tAc "$2"; }
           final=$(sql payments "SELECT count(*) FROM payments WHERE status <> 'PROCESSING'")
           for _ in $(seq 30); do
-            tried=$(sql webhooks "SELECT count(*) FROM deliveries WHERE attempts > 0")
-            [ "$tried" = "$final" ] && break
+            delivered=$(sql webhooks "SELECT count(*) FROM deliveries WHERE status = 'delivered'")
+            [ "$delivered" = "$final" ] && break
             sleep 1
           done
-          echo "$final final payments, $tried deliveries tried"
-          test "$tried" = "$final"
+          echo "$final final payments, $delivered webhooks delivered"
+          test "$delivered" = "$final"
           test "$(sql webhooks "SELECT count(DISTINCT event_id) FROM deliveries")" = "$final"
+          # The receiver shows each one with its signature verified.
+          test "$(curl --fail --silent --show-error localhost:3000/webhooks | grep -o 'válida' | wc -l)" -ge "$final"
+      - name: The web app serves its pages
+        run: |
+          for page in / /checkout /webhooks /acquirer /api/health; do
+            curl --fail --silent --show-error --output /dev/null "localhost:3000$page"
+          done
+      # A person's path through the web app, in a browser (web/e2e). Last, as
+      # some tests switch the endpoint and the acquirer off for a while.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Browser tests
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run e2e
+      - name: Keep the browser report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7
       - name: Show the logs
         if: failure()
         run: docker compose logs
