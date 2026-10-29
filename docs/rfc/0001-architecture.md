@@ -138,6 +138,8 @@ In each `payments-worker`, every second, the recovery claims up to 100 `PROCESSI
 - if it has attempts left and is inside its authorization window, it records a new attempt, repeats the authorization with the same key and records the answer as in section 5.2;
 - otherwise, its attempts have run out, and it follows section 5.3. Whether any attempt may have reached the acquirer comes from the history: only an attempt refused before it was sent did not, and an attempt without an outcome, cut by a crash, may have.
 
+Each payment's step runs in the trace of the request that created it, which T1 keeps with the payment, so its calls, its event and its webhook join that trace (NFR07).
+
 Every minute, it also raises an alert for any payment in `PROCESSING` for more than 5 minutes (INV04): a log line at level `ERROR`, with `alert=payments_unresolved`, the count and the oldest payment. The API and the recovery apply the same rules, implemented once in the use cases (ADR 0004). The recovery does not depend on Kafka, so it keeps working while Kafka is down. When the worker stops, the recovery claims nothing more, and finishes the payments it already claimed.
 
 ### 5.6 Time budget
@@ -201,7 +203,7 @@ The `payments` database:
 | `merchants` | Legal name, RUT and status |
 | `merchant_limits` | The maximum amount per payment, for each currency the merchant accepts |
 | `api_keys` | The merchant, the first characters and a SHA-256 hash of the secret, and the dates it was created and revoked |
-| `payments` | Id (UUIDv7, so ids sort by time), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, lease, reversal start, and timestamps |
+| `payments` | Id (UUIDv7, so ids sort by time), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, lease, reversal start, the trace context of its request, and timestamps |
 | `payment_history` | One row per status change and per call to the acquirer, authorization or reversal: kind, status, attempt, outcome, latency, response code and reason |
 | `outbox` | Events waiting for the relay |
 
@@ -233,7 +235,7 @@ ALTER TABLE payments ADD CONSTRAINT payments_reversal_ends_failed
     CHECK (reversal_started_at IS NULL OR status IN ('PROCESSING', 'FAILED'));
 ```
 
-Other indexes serve the list, newest first per merchant, and the recovery's scan of the `PROCESSING` payments whose lease expired. Migration 00003 created payments with a `PENDING` status for the earlier design; the migration of step 5 removes it, and adds the columns of the recovery. The migration of step 6 adds the reversals to the history.
+Other indexes serve the list, newest first per merchant, and the recovery's scan of the `PROCESSING` payments whose lease expired. Migration 00003 created payments with a `PENDING` status for the earlier design; the migration of step 5 removes it, and adds the columns of the recovery. The migration of step 6 adds the reversals to the history, and the next one the trace context of each payment's request.
 
 ## 8. Kafka
 
@@ -362,7 +364,7 @@ Location: /v1/payments/01a187cb…
 
 ## 13. Observability
 
-- **Traces:** OpenTelemetry. The trace context goes from the request to the call to the acquirer, to the outbox row, from the row to the Kafka headers, and from there to the webhook, so a payment is a single trace from the `POST` to the webhook (NFR07). The services send their spans to Jaeger over OTLP.
+- **Traces:** OpenTelemetry. The trace context goes from the request to the call to the acquirer, to the outbox row, from the row to the Kafka headers, and from there to the webhook, so a payment is a single trace from the `POST` to the webhook (NFR07). A payment that the recovery finishes keeps that trace too: T1 stores the trace context with the payment, and the recovery resumes it. The services send their spans to Jaeger over OTLP.
 - **Logs:** JSON with the trace id, the payment id and the merchant id. Card tokens and API keys are never logged. The alert of INV04 is a log line (section 5.5), until metrics arrive.
 - **Metrics:** not in this iteration. k6 measures latency and throughput, and the roadmap adds Prometheus.
 
