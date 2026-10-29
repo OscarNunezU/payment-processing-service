@@ -16,6 +16,9 @@ func TestTheSeedDataIsValid(t *testing.T) {
 		if _, ok := domain.HashAPIKey(lm.key); !ok {
 			t.Errorf("%s: key %q is not shaped like a key", m.LegalName, lm.key)
 		}
+		if len(lm.webhookSecret) < 24 {
+			t.Errorf("%s: its webhook secret is shorter than the database accepts", m.LegalName)
+		}
 		if ids[m.ID] || ruts[m.RUT] {
 			t.Errorf("%s: its id or RUT is repeated", m.LegalName)
 		}

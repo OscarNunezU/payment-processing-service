@@ -74,6 +74,12 @@ linters:
       - path: _test\.go
         linters:
           - gosec
+      # The seed holds the keys and secrets of the local environment, which
+      # the README publishes. No real credential lives in the repository.
+      - path: cmd/seed/main\.go
+        linters:
+          - gosec
+        text: G101
 
 formatters:
   enable:
