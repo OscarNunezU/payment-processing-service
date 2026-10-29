@@ -2,10 +2,11 @@
 
 - **Status:** accepted
 - **Date:** 2026-10-28
+- **Updated:** 2026-10-28, when the first iteration was narrowed (RFC 0001)
 
 ## Context
 
-The platform has several services that are deployed and scaled on their own (`payments-api`, `payments-worker`, `vault`, `relay`, `money`, `webhooks`), plus the acquirer and bank simulators. All of them are written in Go and share the same platform code: configuration, logging, telemetry, Postgres, the outbox and HTTP.
+The service has several deployables that are deployed and scaled on their own (`payments-api`, `payments-worker` and `webhooks`), plus the acquirer simulator. All of them are written in Go and share the same platform code: configuration, logging, telemetry, Postgres, the outbox, Kafka and HTTP.
 
 ## Decision
 
@@ -20,7 +21,7 @@ The platform has several services that are deployed and scaled on their own (`pa
 - Every service uses the same version of every dependency.
 - A dependency update reaches every service at once, so the whole suite has to pass.
 - The image carries every binary. They are small static binaries, so the cost is a few megabytes.
-- The rule that services do not import each other relies on review for now; a linter rule can enforce it once there are several services.
+- The linter enforces that services do not import each other, with `depguard` rules in `.golangci.yml`.
 
 ## Alternatives considered
 
