@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery as built in step 6 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery and the webhooks as built in steps 6 and 7 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 
@@ -154,6 +154,8 @@ Every minute, it also raises an alert for any payment in `PROCESSING` for more t
 | Circuit breaker | opens after 5 failures, for 30 s |
 | Payments in flight per API instance | 512 |
 | Alert for an unresolved payment | 5 minutes, checked every minute |
+| Webhook POST timeout, and the lease of a claimed delivery | 5 s and 30 s |
+| Wait before a webhook is sent again | 10 s, doubling up to 1 hour, for 24 hours |
 | Graceful shutdown | 20 s for each service |
 | Postgres statement and idle-in-transaction timeouts | 2 s and 5 s |
 
@@ -207,8 +209,8 @@ The `webhooks` database:
 
 | Table | Purpose |
 |---|---|
-| `endpoints` | Each merchant's URL and signing secret |
-| `deliveries` | Event id (unique), merchant, payload, status, attempts, next attempt and the last response |
+| `endpoints` | Each merchant's URL and signing secret. The service signs with the secret, so it keeps it readable; in production it would be encrypted with a key from a KMS. |
+| `deliveries` | Event id (unique), type, merchant, payload, trace context, status, attempts, next attempt, the last response and when it was delivered |
 
 The constraints that carry the guarantees:
 
@@ -260,17 +262,21 @@ A crash between producing and deleting publishes a batch twice, which the consum
 
 ### 8.3 Consumers
 
-- Delivery is at least once, and offsets are committed after the database commit.
+- Delivery is at least once, and offsets are committed after the database commit: a consumer commits what it polled only once every record is stored, so a crash replays them.
 - The webhooks service detects duplicates by the event id.
-- A message that cannot be decoded goes to `payments.dlq.v1` and is committed. Any other error is retried in place, with backoff.
+- A message that cannot be decoded goes to `payments.dlq.v1`, with the reason and the source topic in its headers, and is committed. Any other error, such as the database being down, is retried in place every second, so the events of a partition keep their order.
+- A new consumer group starts at the oldest event the topic retains, so no event is skipped.
+- The partitions stay with their consumer between a poll and its commit (`BlockRebalanceOnPoll`). A consumer that stops releases them, so the next one takes the uncommitted records.
 
 ## 9. Webhooks
 
-- The consumer inserts one delivery per final event, with `ON CONFLICT (event_id) DO NOTHING`, and then commits.
-- A dispatcher claims due deliveries with `FOR UPDATE SKIP LOCKED` and a lease, and posts each event to the merchant's endpoint with a 5 s timeout.
-- **Signature:** the header `Webhook-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body" with the endpoint's secret>`. The receiver checks the signature and rejects timestamps older than 5 minutes.
-- A `2xx` marks the delivery as delivered. Anything else waits 10 s, doubling with jitter up to 1 hour, for 24 hours; after that, the delivery is marked failed.
+- The consumer inserts one delivery per final event, with `ON CONFLICT (event_id) DO NOTHING`, and then commits. An event of a merchant without an endpoint, or of a type that is not a webhook, is skipped.
+- Every second, a dispatcher claims up to 100 due deliveries with `FOR UPDATE SKIP LOCKED`. The claim counts the attempt and leases the delivery for 30 s, longer than the 5 s timeout of its POST. The attempt fences the writes: a dispatcher that outlived its lease, and was overtaken by another claim, records nothing.
+- Each POST carries the event as its body, `Webhook-Id` with the event id, and `Webhook-Signature`. It joins the trace of the payment, and it does not follow redirects: a `3xx` is a failed attempt.
+- **Signature:** the header `Webhook-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body" with the endpoint's secret>`, computed at each attempt. The receiver checks the signature and rejects timestamps more than 5 minutes away. The timestamp is signed with the body, so an old webhook cannot be made to look new.
+- A `2xx` marks the delivery as delivered. Anything else waits 10 s, doubling up to 1 hour, with half of each wait random, for 24 hours; after that, the delivery is marked failed.
 - A delivery goes out at least once, and the event id lets the merchant discard duplicates.
+- Each merchant has one endpoint. Locally, the seed points them at the web app (section 12).
 
 ## 10. Acquirer simulator
 

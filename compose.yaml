@@ -113,11 +113,34 @@ services:
   seed-payments:
     <<: *go-service
     restart: "no"
-    command: ["/seed"]
+    command: ["/seed", "payments"]
     environment:
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
     depends_on:
       migrate-payments:
+        condition: service_completed_successfully
+
+  migrate-webhooks:
+    <<: *go-service
+    restart: "no"
+    command: ["/migrate", "webhooks", "up"]
+    environment:
+      DATABASE_URL: postgres://webhooks:webhooks@postgres:5432/webhooks?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The webhook endpoints of the local merchants, with the secrets in the
+  # README. They point at the web app, which plays the merchants.
+  seed-webhooks:
+    <<: *go-service
+    restart: "no"
+    command: ["/seed", "webhooks"]
+    environment:
+      DATABASE_URL: postgres://webhooks:webhooks@postgres:5432/webhooks?sslmode=disable
+      LOCAL_WEBHOOK_URL: http://web:3000/api/webhooks
+    depends_on:
+      migrate-webhooks:
         condition: service_completed_successfully
 
   payments-api:
@@ -168,6 +191,30 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD", "/healthcheck", "http://localhost:8081/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 30s
+
+  # The consumer of the payment events, and the dispatcher of the webhooks.
+  # Its probes listen on 8082.
+  webhooks:
+    <<: *go-service
+    command: ["/webhooks"]
+    environment:
+      HTTP_ADDR: ":8082"
+      DATABASE_URL: postgres://webhooks:webhooks@postgres:5432/webhooks?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+    depends_on:
+      seed-webhooks:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://localhost:8082/readyz"]
       interval: 3s
       timeout: 3s
       retries: 20
