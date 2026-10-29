@@ -19,10 +19,12 @@ func TestTheWorkerExitsWhenItsProbesCannotStart(t *testing.T) {
 	defer busy.Close()
 	env := config.New(func(key string) (string, bool) {
 		v, ok := map[string]string{
-			"DATABASE_URL":  url,
-			"KAFKA_BROKERS": "127.0.0.1:1", // never reached: the probes fail first
-			"HTTP_ADDR":     busy.Addr().String(),
-			"LOG_LEVEL":     "error",
+			"DATABASE_URL":        url,
+			"KAFKA_BROKERS":       "127.0.0.1:1", // never reached: the probes fail first
+			"ACQUIRER_URL":        "http://127.0.0.1:1",
+			"ACQUIRER_SECRET_KEY": "sk_sim_test",
+			"HTTP_ADDR":           busy.Addr().String(),
+			"LOG_LEVEL":           "error",
 		}[key]
 		return v, ok
 	})
