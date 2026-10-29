@@ -9,6 +9,8 @@ import styles from "./site-nav.module.css";
 // the payments.
 const SECTIONS = [
   { href: "/", label: "Pagos", matches: (path: string) => path === "/" || path.startsWith("/payments/") },
+  { href: "/webhooks", label: "Webhooks", matches: (path: string) => path.startsWith("/webhooks") },
+  { href: "/acquirer", label: "Adquirente", matches: (path: string) => path.startsWith("/acquirer") },
 ];
 
 // SiteNav marks the section of the current page, for the eye and, with
