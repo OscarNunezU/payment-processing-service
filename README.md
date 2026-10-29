@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It accepts card payments in milliseconds, authorizes them with an acquirer in the background through Kafka, and tells the merchant the result by webhook. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages) and the acquirer simulator.
+> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator and merchant authentication.
 
 ## Documents
 
@@ -29,6 +29,20 @@ curl -s localhost:8080/readyz      # {"status":"ready","checks":{"postgres":"ok"
 | Kafka | `localhost:9094` |
 
 `docker compose down --volumes` stops everything and deletes its data.
+
+### Local merchants
+
+Compose loads three merchants. Their keys are for local development only.
+
+| Merchant | Status | API key |
+|---|---|---|
+| Tienda Uno SpA (76.543.210-3) | Active | `sk_test_local_tienda_uno` |
+| Tienda Dos Limitada (77.123.456-9) | Active | `sk_test_local_tienda_dos` |
+| Comercio Suspendido SpA (76.987.654-5) | Suspended | `sk_test_local_suspendida` |
+
+```bash
+curl -s localhost:8080/v1/merchant -H 'Authorization: Bearer sk_test_local_tienda_uno'
+```
 
 ### The acquirer simulator
 
@@ -60,8 +74,8 @@ make ci                # formatting, linters, every test and govulncheck, as in 
 |---|---|
 | Foundation | Done |
 | 1. Scope | Done |
-| 2. Acquirer simulator | In progress |
-| 3. Merchants | Not started |
+| 2. Acquirer simulator | Done |
+| 3. Merchants | In progress |
 | 4. Accepting and querying payments | Not started |
 | 5. Relay and processing | Not started |
 | 6. Uncertainty and failures | Not started |
@@ -79,4 +93,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation and the acquirer simulator are implemented; everything else is designed.
+Today, the foundation, the acquirer simulator and merchant authentication are implemented; everything else is designed.

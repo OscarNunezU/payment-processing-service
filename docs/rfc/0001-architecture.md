@@ -202,8 +202,9 @@ The `payments` database:
 
 | Table | Purpose |
 |---|---|
-| `merchants` | Legal name, RUT, status and the maximum amount per currency |
-| `api_keys` | The merchant, a prefix and a SHA-256 hash of the secret, and the dates it was created and revoked |
+| `merchants` | Legal name, RUT and status |
+| `merchant_limits` | The maximum amount per payment, for each currency the merchant accepts |
+| `api_keys` | The merchant, the first characters and a SHA-256 hash of the secret, and the dates it was created and revoked |
 | `payments` | Id (UUID), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, reversal start and next reversal time, and timestamps |
 | `payment_events` | One row per status change and per call to the acquirer: type, statuses, attempt, outcome, latency and response code |
 | `outbox` | Events waiting for the relay |
@@ -306,7 +307,8 @@ The simulator keeps its book and its tokens in memory. Restarting it is like mov
 ## 11. Public API
 
 - **Base URL:** `payments-api` serves `/v1`.
-- **Authentication:** `Authorization: Bearer sk_test_…`.
+- **Endpoints:** `POST /v1/payments`, `GET /v1/payments/{id}` and `GET /v1/payments`; and `GET /v1/merchant`, which returns the merchant that owns the key.
+- **Authentication:** `Authorization: Bearer sk_test_…`. A missing, unknown or revoked key answers `401`. When Postgres does not answer, the answer is `503`, since the key may well be valid.
 - **Errors:** `{"error": {"code": "...", "message": "...", "param": "..."}}`, with stable codes such as `order_has_active_payment` or `idempotency_key_reused`.
 - **Status codes:** `202` for an accepted payment and for its replays; `200` for queries; `400`, `401`, `404`, `409` and `422`; `500`; and `503` while Postgres is unavailable.
 - **Pagination:** `limit` (50 by default, 100 at most) and `starting_after`, a payment id, with `has_more` in the answer.
@@ -415,8 +417,8 @@ One pull request per step. Each one leaves `main` working and passes its review 
 |---|---|---|---|
 | 1 | Scope | This RFC, the PRD and the roadmap; Valkey and the collector removed | CI is green and `docker compose up` is healthy |
 | 2 | Acquirer simulator | Tokens, authorizations by key, reversal with tombstones, test cards, faults and the book | The contract tests pass |
-| 3 | Merchants | Merchants, API keys, authentication, RUT validation and the seed command | The authentication and isolation tests pass |
-| 4 | Accepting and querying payments | `POST` with idempotency and orders, `GET`, the list, the history and the outbox rows | The idempotency and order scenarios pass |
+| 3 | Merchants | Merchants, API keys, authentication, RUT validation and the seed command | The authentication tests pass |
+| 4 | Accepting and querying payments | `POST` with idempotency and orders, `GET`, the list, the history and the outbox rows | The idempotency, order and isolation scenarios pass |
 | 5 | Relay and processing | Topics, the relay, the processor with concurrent partitions and ordered commits, attempts, retries and final states | A payment goes from `POST` to `APPROVED` through Kafka, and the retry scenarios pass |
 | 6 | Uncertainty and failures | Reversal, the sweeper, expiry, the circuit breaker and epochs | The failure scenarios pass, including a worker killed mid-call and Kafka down |
 | 7 | Webhooks | The consumer, deliveries, signatures and retries | The endpoint-down scenario passes |
