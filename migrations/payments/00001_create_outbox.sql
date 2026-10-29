@@ -1,6 +1,6 @@
 -- +goose Up
 -- Events wait here, written in the same transaction as the change they
--- describe, until the relay publishes them to Kafka (RFC 0001, section 8.3).
+-- describe, until the relay publishes them to Kafka (RFC 0001, section 8.2).
 CREATE TABLE outbox (
     id         bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     topic      text        NOT NULL,

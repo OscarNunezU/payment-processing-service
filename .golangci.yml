@@ -17,8 +17,8 @@ linters:
     # The dependency rules of ADR 0004 and ADR 0001.
     depguard:
       rules:
-        # Only the standard library, minus context. Tests may use more, such
-        # as rapid for property tests. A new service adds its own domain here.
+        # Only the standard library, minus context. Tests may use more. A new
+        # service adds its own domain here.
         domain:
           files:
             - "**/internal/*/domain/**"
@@ -39,18 +39,32 @@ linters:
               desc: "SQL belongs in the Store adapter (ADR 0004)"
             - pkg: net/http
               desc: "HTTP belongs in the adapters (ADR 0004)"
-            - pkg: github.com/valkey-io/valkey-go
-              desc: "Valkey belongs in its adapter (ADR 0004)"
+            - pkg: github.com/twmb/franz-go
+              desc: "Kafka belongs in its adapter (ADR 0004)"
         payments:
           files:
             - "**/internal/payments/**"
           deny:
-            - pkg: github.com/OscarNunezU/payment-processing-service/internal/vault
-              desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
-            - pkg: github.com/OscarNunezU/payment-processing-service/internal/money
-              desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
             - pkg: github.com/OscarNunezU/payment-processing-service/internal/webhooks
               desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
+            - pkg: github.com/OscarNunezU/payment-processing-service/internal/acquirersim
+              desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
+        webhooks:
+          files:
+            - "**/internal/webhooks/**"
+          deny:
+            - pkg: github.com/OscarNunezU/payment-processing-service/internal/payments
+              desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
+            - pkg: github.com/OscarNunezU/payment-processing-service/internal/acquirersim
+              desc: "services talk through APIs and events, never through each other's packages (ADR 0001)"
+        acquirersim:
+          files:
+            - "**/internal/acquirersim/**"
+          deny:
+            - pkg: github.com/OscarNunezU/payment-processing-service/internal/payments
+              desc: "the simulator stands for another company: it shares no code with the service (ADR 0001)"
+            - pkg: github.com/OscarNunezU/payment-processing-service/internal/webhooks
+              desc: "the simulator stands for another company: it shares no code with the service (ADR 0001)"
   exclusions:
     presets:
       - std-error-handling

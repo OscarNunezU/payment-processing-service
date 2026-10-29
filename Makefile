@@ -23,7 +23,7 @@ lint: $(GOLANGCI_LINT) ## Run the linters
 test: ## Run the unit tests (no Docker needed)
 	go test -race -short ./...
 
-test-integration: ## Run every test, starting Postgres and Valkey in containers
+test-integration: ## Run every test, starting Postgres in a container
 	go test -race -count=1 ./...
 
 vulncheck: $(GOVULNCHECK) ## Check dependencies and the standard library for known vulnerabilities

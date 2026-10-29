@@ -13,7 +13,7 @@ import (
 )
 
 // No statement may run longer than 2 s and no transaction may sit idle for more
-// than 5 s, so a slow acquirer can never hold locks (RFC 0001, section 5.2).
+// than 5 s, so a slow acquirer can never hold locks (RFC 0001, section 5.6).
 const (
 	StatementTimeout         = 2 * time.Second
 	IdleInTransactionTimeout = 5 * time.Second

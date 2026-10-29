@@ -1,7 +1,7 @@
 // Package outbox writes events to the outbox table, in the same transaction as
 // the change they describe. The relay publishes them to Kafka afterwards, so an
 // event is never lost and never published for a change that rolled back
-// (RFC 0001, section 8.3).
+// (RFC 0001, section 8.2).
 package outbox
 
 import (
