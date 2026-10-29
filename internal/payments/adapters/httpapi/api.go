@@ -54,14 +54,14 @@ func (a *API) authenticated(next func(http.ResponseWriter, *http.Request, domain
 }
 
 // bearerToken returns the token of an "Authorization: Bearer <token>" header,
-// or "" when there is none. The scheme is case-insensitive (RFC 9110, section
-// 11.1).
+// or "" when there is none. The scheme is case-insensitive, and one or more
+// spaces may follow it (RFC 9110, sections 11.1 and 11.4).
 func bearerToken(r *http.Request) string {
 	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return ""
 	}
-	return token
+	return strings.TrimLeft(token, " ")
 }
 
 // writeUnavailable answers 503 when a dependency the request needs, such as

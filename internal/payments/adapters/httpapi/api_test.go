@@ -83,13 +83,15 @@ func TestRequestsWithoutAValidKeyAre401(t *testing.T) {
 	}
 }
 
-func TestTheBearerSchemeIsCaseInsensitive(t *testing.T) {
+func TestTheBearerSchemeFollowsHTTP(t *testing.T) {
 	secret := domain.NewAPIKey()
 	hash, _ := domain.HashAPIKey(secret)
 	store := merchants{byHash: map[[sha256.Size]byte]domain.Merchant{hash: {ID: "m1"}}}
-	for _, scheme := range []string{"Bearer", "bearer", "BEARER"} {
-		if rec := serve(t, store, scheme+" "+secret); rec.Code != http.StatusOK {
-			t.Errorf("%s: got %d, want 200", scheme, rec.Code)
+	// The scheme is case-insensitive, and one or more spaces separate it from
+	// the credentials.
+	for _, authorization := range []string{"Bearer " + secret, "bearer " + secret, "BEARER " + secret, "Bearer   " + secret} {
+		if rec := serve(t, store, authorization); rec.Code != http.StatusOK {
+			t.Errorf("%q: got %d, want 200", authorization, rec.Code)
 		}
 	}
 }
