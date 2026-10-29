@@ -115,7 +115,9 @@ type Deps struct {
 	Merchants Merchants
 	Payments  Payments
 	Acquirer  Acquirer
-	Gate      Gate
+	// Gate admits the API's new payments, and Breaker the recovery's attempts.
+	Gate    Gate
+	Breaker Breaker
 	// NewID returns time-ordered ids, so that the newest payments sort first.
 	NewID func() string
 	Now   func() time.Time
@@ -124,7 +126,8 @@ type Deps struct {
 	Log    *slog.Logger
 }
 
-// Service runs the use cases of payments-api.
+// Service runs the use cases of payments-api, and the recovery of
+// payments-worker.
 type Service struct {
 	d Deps
 }
@@ -188,10 +191,13 @@ func (s *Service) Accept(ctx context.Context, m domain.Merchant, r domain.Paymen
 	// answer still finish, so the outcome is recorded instead of left for the
 	// recovery to find out.
 	ctx = context.WithoutCancel(ctx)
-	a := s.d.Acquirer.Authorize(ctx, AuthorizationRequest{
-		Key: p.ID, Token: p.CardToken, Amount: p.Amount, Currency: p.Currency, Reference: p.OrderID,
-	})
-	return s.record(ctx, p, a), false, nil
+	return s.record(ctx, p, s.d.Acquirer.Authorize(ctx, authorization(p))), false, nil
+}
+
+// authorization is the call to the acquirer for p, with p's id as the key on
+// every attempt.
+func authorization(p domain.Payment) AuthorizationRequest {
+	return AuthorizationRequest{Key: p.ID, Token: p.CardToken, Amount: p.Amount, Currency: p.Currency, Reference: p.OrderID}
 }
 
 // record applies the answer to p and stores it (T2). It returns the payment as
@@ -199,14 +205,8 @@ func (s *Service) Accept(ctx context.Context, m domain.Merchant, r domain.Paymen
 // and the recovery repeats the call with the same key once the lease expires,
 // so the answer is never lost, only delayed.
 func (s *Service) record(ctx context.Context, p domain.Payment, a domain.Answer) domain.Payment {
-	now := s.now()
-	next := p.WithAnswer(a, now, s.d.Random)
-	var final *events.PaymentEvent
-	if next.Status.Final() {
-		e := paymentEvent(eventType(next.Status), s.d.NewID(), next, now)
-		final = &e
-	}
-	err := s.d.Payments.RecordAnswer(ctx, next, a, final)
+	next := p.WithAnswer(a, s.now(), s.d.Random)
+	err := s.d.Payments.RecordAnswer(ctx, next, a, s.finalEvent(next))
 	switch {
 	case err == nil:
 		return next
@@ -221,6 +221,15 @@ func (s *Service) record(ctx context.Context, p domain.Payment, a domain.Answer)
 			"payment_id", p.ID, "outcome", a.Outcome, "error", err)
 	}
 	return p
+}
+
+// finalEvent is the event of p's final state, or nil while p is PROCESSING.
+func (s *Service) finalEvent(p domain.Payment) *events.PaymentEvent {
+	if !p.Status.Final() {
+		return nil
+	}
+	e := paymentEvent(eventType(p.Status), s.d.NewID(), p, p.UpdatedAt)
+	return &e
 }
 
 // now is the time in UTC, to the microsecond, as Postgres keeps it: the

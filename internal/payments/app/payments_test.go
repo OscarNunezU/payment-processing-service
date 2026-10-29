@@ -166,7 +166,10 @@ func TestARetryIsNeverGated(t *testing.T) {
 }
 
 // hangUp is an acquirer that checks the call outlives the merchant's request.
-type hangUp struct{ t *testing.T }
+type hangUp struct {
+	*apptest.Acquirer
+	t *testing.T
+}
 
 func (a hangUp) Authorize(ctx context.Context, _ app.AuthorizationRequest) domain.Answer {
 	if ctx.Err() != nil {
@@ -176,7 +179,7 @@ func (a hangUp) Authorize(ctx context.Context, _ app.AuthorizationRequest) domai
 }
 
 func TestTheCallFinishesWhenTheMerchantHangsUp(t *testing.T) {
-	h := newHarness(t, func(*apptest.Store) app.Acquirer { return hangUp{t} })
+	h := newHarness(t, func(*apptest.Store) app.Acquirer { return hangUp{apptest.Approving(), t} })
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	p, _, err := h.svc.Accept(ctx, merchant, request("k1", "o1"))
@@ -194,16 +197,20 @@ func TestWhenTheAnswerCannotBeRecordedThePaymentStaysProcessing(t *testing.T) {
 	}
 }
 
-// takeOver is an acquirer during whose call the recovery claims the payment.
-type takeOver struct{ store *apptest.Store }
+// takeOver is an acquirer during whose calls another worker claims the
+// payment.
+type takeOver struct {
+	*apptest.Acquirer
+	store *apptest.Store
+}
 
-func (a takeOver) Authorize(_ context.Context, r app.AuthorizationRequest) domain.Answer {
+func (a takeOver) Authorize(ctx context.Context, r app.AuthorizationRequest) domain.Answer {
 	a.store.TakeOver(r.Key)
-	return domain.Answer{Outcome: domain.OutcomeApproved, AuthorizationCode: "7T4N4V"}
+	return a.Acquirer.Authorize(ctx, r)
 }
 
 func TestAPaymentTakenOverIsAnsweredAsItIs(t *testing.T) {
-	h := newHarness(t, func(s *apptest.Store) app.Acquirer { return takeOver{s} })
+	h := newHarness(t, func(s *apptest.Store) app.Acquirer { return takeOver{apptest.Approving(), s} })
 	p, _, err := h.svc.Accept(t.Context(), merchant, request("k1", "o1"))
 	if err != nil || p.Status != domain.PaymentProcessing || p.Epoch != 2 {
 		t.Errorf("got %+v, %v, want the payment as the recovery holds it", p, err)
