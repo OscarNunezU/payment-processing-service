@@ -324,6 +324,8 @@ func TestTheDatabaseKeepsAPaymentConsistent(t *testing.T) {
 		"a PROCESSING payment without lease":  `UPDATE payments SET lease_until = NULL`,
 		"an APPROVED payment with a lease":    `UPDATE payments SET status = 'APPROVED'`,
 		"the PENDING status of the old model": `UPDATE payments SET status = 'PENDING'`,
+		"an approval after a reversal started": `UPDATE payments
+			SET status = 'APPROVED', lease_until = NULL, reversal_started_at = now()`,
 	} {
 		if _, err := pool.Exec(t.Context(), query); err == nil {
 			t.Errorf("%s was stored", name)

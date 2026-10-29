@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/OscarNunezU/payment-processing-service/internal/events"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
@@ -57,8 +58,7 @@ func (s *Store) SetStatus(id string, status domain.PaymentStatus) {
 	}
 }
 
-// TakeOver increments a payment's epoch, as the recovery does when it claims
-// the payment.
+// TakeOver increments a payment's epoch, as a recovery that claims it does.
 func (s *Store) TakeOver(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,36 +126,150 @@ func (s *Store) InsertPayment(_ context.Context, p domain.Payment, admit func() 
 func (s *Store) RecordAnswer(_ context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Err != nil {
-		return s.Err
-	}
 	if s.RecordErr != nil {
 		return s.RecordErr
 	}
-	for i, q := range s.payments {
-		if q.ID != p.ID {
-			continue
-		}
-		if q.Status != domain.PaymentProcessing || q.Epoch != p.Epoch {
-			return app.ErrStaleEpoch
-		}
-		s.payments[i] = p
-		h := s.history[p.ID]
+	return s.record(p, final, func(h []domain.HistoryEntry) {
 		for j := range h {
 			if h[j].Kind == domain.HistoryAcquirerCall && h[j].Attempt == p.Attempts {
-				h[j].Outcome, h[j].ResponseCode, h[j].LatencyMS = string(a.Outcome), a.ResponseCode, int(a.Latency.Milliseconds())
+				answer(&h[j], a)
 			}
 		}
-		if p.Status.Final() {
-			h = append(h, domain.HistoryEntry{Kind: domain.HistoryStatus, Status: p.Status, Reason: string(p.Reason), At: p.UpdatedAt})
-		}
-		s.history[p.ID] = h
-		if final != nil {
-			s.outbox = append(s.outbox, *final)
-		}
-		return nil
+	})
+}
+
+func (s *Store) ClaimDue(_ context.Context, now time.Time, limit int) ([]app.Claim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Err != nil {
+		return nil, s.Err
 	}
-	return app.ErrNotFound
+	var due []int
+	for i, p := range s.payments {
+		if p.Status == domain.PaymentProcessing && !p.LeaseUntil.After(now) {
+			due = append(due, i)
+		}
+	}
+	slices.SortFunc(due, func(a, b int) int { return s.payments[a].LeaseUntil.Compare(s.payments[b].LeaseUntil) })
+	var claims []app.Claim
+	for _, i := range due[:min(limit, len(due))] {
+		p := &s.payments[i]
+		p.Epoch++
+		p.LeaseUntil = now.Add(domain.Lease)
+		reached := false
+		for _, h := range s.history[p.ID] {
+			if h.Kind == domain.HistoryAcquirerCall && h.Outcome != string(domain.OutcomeNotSent) {
+				reached = true
+			}
+		}
+		claims = append(claims, app.Claim{Payment: *p, Reached: reached})
+	}
+	return claims, nil
+}
+
+func (s *Store) StartAttempt(_ context.Context, p domain.Payment, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored, err := s.fenced(p)
+	if err != nil {
+		return err
+	}
+	stored.Attempts = p.Attempts
+	s.history[p.ID] = append(s.history[p.ID], domain.HistoryEntry{Kind: domain.HistoryAcquirerCall, Attempt: p.Attempts, At: at})
+	return nil
+}
+
+func (s *Store) StartReversal(_ context.Context, p domain.Payment, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored, err := s.fenced(p)
+	if err != nil {
+		return err
+	}
+	stored.ReversalStartedAt = p.ReversalStartedAt
+	s.history[p.ID] = append(s.history[p.ID], domain.HistoryEntry{Kind: domain.HistoryReversal, At: at})
+	return nil
+}
+
+func (s *Store) RecordReversal(_ context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.record(p, final, func(h []domain.HistoryEntry) {
+		for j := len(h) - 1; j >= 0; j-- {
+			if h[j].Kind == domain.HistoryReversal {
+				answer(&h[j], a)
+				return
+			}
+		}
+	})
+}
+
+func (s *Store) Finish(_ context.Context, p domain.Payment, final events.PaymentEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.record(p, &final, nil)
+}
+
+func (s *Store) Unresolved(_ context.Context, createdBefore time.Time) (app.Unresolved, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Err != nil {
+		return app.Unresolved{}, s.Err
+	}
+	var u app.Unresolved
+	for _, p := range s.payments {
+		if p.Status != domain.PaymentProcessing || !p.CreatedAt.Before(createdBefore) {
+			continue
+		}
+		if u.Count == 0 || p.CreatedAt.Before(u.OldestCreatedAt) {
+			u.OldestID, u.OldestCreatedAt = p.ID, p.CreatedAt
+		}
+		u.Count++
+	}
+	return u, nil
+}
+
+// record stores p, as the transaction that ends a call does: it applies only
+// to a payment still PROCESSING with p's epoch, gives the call its answer
+// through call, and with final, adds the final status and the event.
+func (s *Store) record(p domain.Payment, final *events.PaymentEvent, call func([]domain.HistoryEntry)) error {
+	stored, err := s.fenced(p)
+	if err != nil {
+		return err
+	}
+	*stored = p
+	h := s.history[p.ID]
+	if call != nil {
+		call(h)
+	}
+	if final != nil {
+		h = append(h, domain.HistoryEntry{Kind: domain.HistoryStatus, Status: p.Status, Reason: string(p.Reason), At: p.UpdatedAt})
+		s.outbox = append(s.outbox, *final)
+	}
+	s.history[p.ID] = h
+	return nil
+}
+
+// fenced returns the stored payment p, if it is still PROCESSING with p's
+// epoch.
+func (s *Store) fenced(p domain.Payment) (*domain.Payment, error) {
+	if s.Err != nil {
+		return nil, s.Err
+	}
+	for i := range s.payments {
+		if s.payments[i].ID != p.ID {
+			continue
+		}
+		if s.payments[i].Status != domain.PaymentProcessing || s.payments[i].Epoch != p.Epoch {
+			return nil, app.ErrStaleEpoch
+		}
+		return &s.payments[i], nil
+	}
+	return nil, app.ErrNotFound
+}
+
+func answer(h *domain.HistoryEntry, a domain.Answer) {
+	h.Outcome, h.ResponseCode, h.LatencyMS = string(a.Outcome), a.ResponseCode, int(a.Latency.Milliseconds())
 }
 
 func active(s domain.PaymentStatus) bool {

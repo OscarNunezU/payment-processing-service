@@ -21,17 +21,19 @@ import (
 const paymentColumns = `id, merchant_id, order_id, idempotency_key, request_hash, amount, currency, card_token,
 	coalesce(card_brand, ''), coalesce(card_last4, ''), status, coalesce(reason, ''),
 	coalesce(authorization_code, ''), coalesce(decline_code, ''), attempts, epoch, lease_until,
-	created_at, updated_at`
+	reversal_started_at, created_at, updated_at`
 
-func scanPayment(row pgx.Row) (domain.Payment, error) {
+// scanPayment reads a payment in the order of paymentColumns, and then the
+// columns that follow into extra.
+func scanPayment(row pgx.Row, extra ...any) (domain.Payment, error) {
 	var (
-		p     domain.Payment
-		hash  []byte
-		lease *time.Time
+		p                      domain.Payment
+		hash                   []byte
+		lease, reversalStarted *time.Time
 	)
-	err := row.Scan(&p.ID, &p.MerchantID, &p.OrderID, &p.IdempotencyKey, &hash, &p.Amount, &p.Currency, &p.CardToken,
-		&p.CardBrand, &p.CardLast4, &p.Status, &p.Reason, &p.AuthorizationCode, &p.DeclineCode, &p.Attempts, &p.Epoch,
-		&lease, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(append([]any{&p.ID, &p.MerchantID, &p.OrderID, &p.IdempotencyKey, &hash, &p.Amount, &p.Currency,
+		&p.CardToken, &p.CardBrand, &p.CardLast4, &p.Status, &p.Reason, &p.AuthorizationCode, &p.DeclineCode,
+		&p.Attempts, &p.Epoch, &lease, &reversalStarted, &p.CreatedAt, &p.UpdatedAt}, extra...)...)
 	if err != nil {
 		return domain.Payment{}, err
 	}
@@ -40,6 +42,9 @@ func scanPayment(row pgx.Row) (domain.Payment, error) {
 	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
 	if lease != nil {
 		p.LeaseUntil = lease.UTC()
+	}
+	if reversalStarted != nil {
+		p.ReversalStartedAt = reversalStarted.UTC()
 	}
 	return p, nil
 }
@@ -106,6 +111,23 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func(
 // payment still PROCESSING with p's epoch, so a writer that was taken over
 // changes nothing.
 func (s *Store) RecordAnswer(ctx context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
+	return s.record(ctx, p, final, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE payment_history SET outcome = $3, latency_ms = $4, response_code = nullif($5, '')
+			WHERE payment_id = $1 AND kind = 'acquirer_call' AND attempt = $2`,
+			p.ID, p.Attempts, a.Outcome, a.Latency.Milliseconds(), a.ResponseCode,
+		); err != nil {
+			return fmt.Errorf("record attempt %d of payment %s: %w", p.Attempts, p.ID, err)
+		}
+		return nil
+	})
+}
+
+// record stores p's new state, conditional on the stored payment being still
+// PROCESSING with p's epoch, in one transaction with the answer of its call,
+// when call is not nil, and with the final status and its event in the
+// outbox, when final is not nil.
+func (s *Store) record(ctx context.Context, p domain.Payment, final *events.PaymentEvent, call func(pgx.Tx) error) error {
 	var payload []byte
 	if final != nil {
 		var err error
@@ -128,17 +150,15 @@ func (s *Store) RecordAnswer(ctx context.Context, p domain.Payment, a domain.Ans
 			lease, p.UpdatedAt,
 		)
 		if err != nil {
-			return fmt.Errorf("record the answer for payment %s: %w", p.ID, err)
+			return fmt.Errorf("record the state of payment %s: %w", p.ID, err)
 		}
 		if tag.RowsAffected() == 0 {
 			return app.ErrStaleEpoch
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE payment_history SET outcome = $3, latency_ms = $4, response_code = nullif($5, '')
-			WHERE payment_id = $1 AND kind = 'acquirer_call' AND attempt = $2`,
-			p.ID, p.Attempts, a.Outcome, a.Latency.Milliseconds(), a.ResponseCode,
-		); err != nil {
-			return fmt.Errorf("record attempt %d of payment %s: %w", p.Attempts, p.ID, err)
+		if call != nil {
+			if err := call(tx); err != nil {
+				return err
+			}
 		}
 		if final == nil {
 			return nil
