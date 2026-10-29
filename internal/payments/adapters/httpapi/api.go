@@ -18,18 +18,21 @@ import (
 
 // API serves the merchant-facing endpoints.
 type API struct {
-	merchants app.Merchants
-	log       *slog.Logger
+	svc *app.Service
+	log *slog.Logger
 }
 
-// New returns the API on top of the store's merchants.
-func New(merchants app.Merchants, log *slog.Logger) *API {
-	return &API{merchants: merchants, log: log}
+// New returns the API on top of the use cases.
+func New(svc *app.Service, log *slog.Logger) *API {
+	return &API{svc: svc, log: log}
 }
 
 // Register adds the API's routes to mux.
 func (a *API) Register(mux *http.ServeMux) {
 	httpx.Handle(mux, "GET /v1/merchant", a.authenticated(a.getMerchant))
+	httpx.Handle(mux, "POST /v1/payments", a.authenticated(a.createPayment))
+	httpx.Handle(mux, "GET /v1/payments/{id}", a.authenticated(a.getPayment))
+	httpx.Handle(mux, "GET /v1/payments", a.authenticated(a.listPayments))
 }
 
 // authenticated resolves the merchant of the request's secret key before
@@ -37,7 +40,7 @@ func (a *API) Register(mux *http.ServeMux) {
 // answer, 503: the key may well be valid.
 func (a *API) authenticated(next func(http.ResponseWriter, *http.Request, domain.Merchant)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m, err := app.Authenticate(r.Context(), a.merchants, bearerToken(r))
+		m, err := a.svc.Authenticate(r.Context(), bearerToken(r))
 		switch {
 		case errors.Is(err, app.ErrUnauthenticated):
 			w.Header().Set("WWW-Authenticate", `Bearer realm="payments"`)

@@ -11,10 +11,18 @@ type ErrorBody struct {
 }
 
 // ErrorDetail carries a stable code for programs and a message for people.
+// Fields lists every malformed field of a request, so a client can fix them
+// all in one round trip.
 type ErrorDetail struct {
-	Code    string `json:"code"`
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Fields  []FieldError `json:"fields,omitempty"`
+}
+
+// FieldError is one malformed field, named as the client sent it.
+type FieldError struct {
+	Field   string `json:"field"`
 	Message string `json:"message"`
-	Param   string `json:"param,omitempty"`
 }
 
 // WriteJSON writes v as the JSON body of a response with status.

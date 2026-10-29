@@ -1,6 +1,6 @@
-// Command payments-api serves the public payments API (RFC 0001, section 11).
-// So far it authenticates merchants; payments arrive in step 4 of the plan
-// (RFC 0001, section 17).
+// Command payments-api serves the public payments API (RFC 0001, section 11):
+// it accepts payments and answers queries about them. It only talks to
+// Postgres, so neither Kafka nor the acquirer can slow it down.
 package main
 
 import (
@@ -13,9 +13,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"uuid"
 
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/httpapi"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/postgres"
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/config"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/health"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/httpx"
@@ -91,7 +93,9 @@ func run() error {
 	httpx.Handle(mux, "GET /readyz", health.Ready(log, time.Second,
 		health.Check{Name: "postgres", Critical: true, Run: db.Ping},
 	))
-	httpapi.New(postgres.New(db), log).Register(mux)
+	store := postgres.New(db)
+	svc := app.NewService(store, store, func() string { return uuid.NewV7().String() }, time.Now)
+	httpapi.New(svc, log).Register(mux)
 	handler := httpx.Trace(service, httpx.RequestID(httpx.AccessLog(log)(httpx.Recover(log)(mux))))
 
 	log.Info("listening", "addr", s.httpAddr, "version", s.version)
