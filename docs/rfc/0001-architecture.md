@@ -278,13 +278,15 @@ The events of one payment are written in separate transactions, one after the ot
 
 ## 10. Acquirer simulator
 
+The simulator listens on two ports. The public one serves browsers and `payments-worker`. The admin one serves the book, the faults and the health probe, and keeps working while the public one is down.
+
 | Endpoint | Caller | Behavior |
 |---|---|---|
-| `POST /v1/tokens` | The browser, with a publishable key | Card number, expiry and CVC in; token, brand and last 4 out. Rejects numbers that fail the Luhn check and expired cards. A token lasts 1 hour. |
-| `POST /v1/authorizations` | `payments-worker`, with a secret key and an `Idempotency-Key` | Token, amount, currency and merchant reference in. Answers approved with an authorization code, or declined with a code, plus the card summary. The same key gets the same answer, and a reversed key answers `409 reversed`. |
-| `POST /v1/authorizations/{key}/reversal` | `payments-worker` | Releases the authorization if there is one, and leaves a tombstone so the key can never be authorized. It is idempotent and also works for a key it never saw. |
-| `GET /admin/book` | Tests and the consistency checker | Every key and its state. |
-| `PUT /admin/faults` | The panel and the load tests | Latency, error rate, timeout rate, or down. |
+| `POST /v1/tokens` | The browser, with a publishable key | Card number, expiry and CVC in; token, brand and last 4 out. Rejects numbers that fail the Luhn check and expired cards. A token lasts 1 hour and pays for a single authorization key. |
+| `POST /v1/authorizations` | `payments-worker`, with a secret key and an `Idempotency-Key` | Token, amount, currency and merchant reference in. Answers approved with an authorization code, or declined with a code, plus the card summary. The decision is recorded before the answer is sent, so a client that times out finds it on its retry. The same key gets the same answer, with `Idempotent-Replayed: true`; the same key with a different request answers `422 idempotency_key_reused`; and a reversed key answers `409 reversed`. |
+| `POST /v1/authorizations/{key}/reversal` | `payments-worker`, with a secret key | Releases the authorization if there is one, and leaves a tombstone so the key can never be authorized. It is idempotent and also works for a key it never saw. |
+| `GET /admin/book` | Tests and the consistency checker | Every key: its outcome, whether it was reversed, and whether it is still live. |
+| `GET` and `PUT /admin/faults` | The panel and the load tests | Latency added to every answer, the share of calls answered `503` without being processed, the share answered late, and down, which closes the public port so new connections are refused. |
 
 Test cards:
 
@@ -295,11 +297,11 @@ Test cards:
 | `4000000000009995` | Declined, `insufficient_funds` |
 | `4000000000000119` | `503` on every authorization: the payment is reversed and ends `FAILED`, `acquirer_unavailable` |
 | `4000000000000127` | `503` on the first authorization, then approved |
-| `4000000000000135` | Approves, but answers after the timeout |
+| `4000000000000135` | Approves, but the first answer comes 8 s later, after the worker's 5 s timeout |
 | `4000000000000143` | `422`: `FAILED`, `acquirer_rejected` |
 | `4000000000000150` | Approves and never answers |
 
-The simulator keeps its book in memory. Restarting it is like moving to a new acquirer, so the tests never do it.
+The simulator keeps its book and its tokens in memory. Restarting it is like moving to a new acquirer, so the tests never do it.
 
 ## 11. Public API
 
