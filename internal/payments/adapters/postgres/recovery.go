@@ -22,7 +22,7 @@ import (
 //
 // A payment reached the acquirer unless every one of its attempts was refused
 // before it was sent: an attempt without an outcome, cut by a crash, may have
-// reached it.
+// reached it. Each claim also carries the trace of the payment's request.
 func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int) ([]app.Claim, error) {
 	rows, err := s.db.Query(ctx, `
 		WITH due (due_id) AS MATERIALIZED (
@@ -38,7 +38,7 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int) ([]app.C
 			SELECT 1 FROM payment_history h
 			WHERE h.payment_id = payments.id AND h.kind = 'acquirer_call'
 			  AND h.outcome IS DISTINCT FROM 'not_sent'
-		)`,
+		), coalesce(traceparent, '')`,
 		now, limit, now.Add(domain.Lease),
 	)
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int) ([]app.C
 	claims, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (app.Claim, error) {
 		var c app.Claim
 		var err error
-		c.Payment, err = scanPayment(row, &c.Reached)
+		c.Payment, err = scanPayment(row, &c.Reached, &c.Trace)
 		return c, err
 	})
 	if err != nil {

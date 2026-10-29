@@ -25,6 +25,7 @@ type Store struct {
 	payments  []domain.Payment
 	history   map[string][]domain.HistoryEntry
 	outbox    []events.PaymentEvent
+	traces    map[string]string
 	// Err, when set, is what every call returns, as a database that is down.
 	Err error
 	// RecordErr, when set, is what RecordAnswer returns, as a database that
@@ -34,7 +35,7 @@ type Store struct {
 
 // NewStore returns an empty store.
 func NewStore() *Store {
-	return &Store{merchants: map[[sha256.Size]byte]domain.Merchant{}, history: map[string][]domain.HistoryEntry{}}
+	return &Store{merchants: map[[sha256.Size]byte]domain.Merchant{}, history: map[string][]domain.HistoryEntry{}, traces: map[string]string{}}
 }
 
 // AddMerchant stores m and returns a new API key for it.
@@ -56,6 +57,14 @@ func (s *Store) SetStatus(id string, status domain.PaymentStatus) {
 			s.payments[i].Status = status
 		}
 	}
+}
+
+// SetTrace keeps trace as the trace of the request that created payment id,
+// as T1 does with the trace of its context.
+func (s *Store) SetTrace(id, trace string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.traces[id] = trace
 }
 
 // TakeOver increments a payment's epoch, as a recovery that claims it does.
@@ -162,7 +171,7 @@ func (s *Store) ClaimDue(_ context.Context, now time.Time, limit int) ([]app.Cla
 				reached = true
 			}
 		}
-		claims = append(claims, app.Claim{Payment: *p, Reached: reached})
+		claims = append(claims, app.Claim{Payment: *p, Reached: reached, Trace: s.traces[p.ID]})
 	}
 	return claims, nil
 }

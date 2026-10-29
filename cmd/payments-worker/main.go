@@ -133,7 +133,9 @@ func run(ctx context.Context, env *config.Env) error {
 		NewID:    func() string { return uuid.NewV7().String() },
 		Now:      time.Now,
 		Random:   rand.Float64, //nolint:gosec // jitter, not a secret
-		Log:      log,
+		// A payment finished here joins the trace of its request (NFR07).
+		ResumeTrace: telemetry.Resume,
+		Log:         log,
 	})
 
 	var wg sync.WaitGroup

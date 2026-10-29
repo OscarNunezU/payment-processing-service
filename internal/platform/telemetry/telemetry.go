@@ -44,3 +44,24 @@ func Setup(ctx context.Context, service, version, endpoint string) (shutdown fun
 	otel.SetTracerProvider(provider)
 	return provider.Shutdown, nil
 }
+
+// TraceParent returns the trace context of ctx as a W3C traceparent, or ""
+// when ctx carries no trace. It is how a trace is kept with a record, so
+// work done later for the record can join the trace again.
+func TraceParent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return carrier.Get("traceparent")
+}
+
+// Resume starts a span named name as a child of traceparent, so that work
+// done later for a request, such as the recovery of a payment, joins the
+// request's trace. Without a valid traceparent, the span starts a trace of
+// its own. end ends the span.
+func Resume(ctx context.Context, traceparent, name string) (_ context.Context, end func()) {
+	if traceparent != "" {
+		ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": traceparent})
+	}
+	ctx, span := otel.Tracer("github.com/OscarNunezU/payment-processing-service").Start(ctx, name)
+	return ctx, func() { span.End() }
+}

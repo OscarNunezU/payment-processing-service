@@ -84,6 +84,9 @@ type Claim struct {
 	// Reached is whether any of its attempts may have reached the acquirer:
 	// false only when every one was refused before it was sent.
 	Reached bool
+	// Trace is the trace of the request that created the payment, as a W3C
+	// traceparent, or "" when it had none.
+	Trace string
 }
 
 // Unresolved is the alert of the recovery (INV04): how many payments are
@@ -123,7 +126,12 @@ type Deps struct {
 	Now   func() time.Time
 	// Random returns a number in [0, 1), for the jitter of the backoff.
 	Random func() float64
-	Log    *slog.Logger
+	// ResumeTrace runs the recovery of a payment in the trace of the request
+	// that created it, so its calls, its event and its webhook join that
+	// trace (NFR07). end closes what it opened. Without it, the recovery
+	// keeps the trace of ctx.
+	ResumeTrace func(ctx context.Context, trace, name string) (_ context.Context, end func())
+	Log         *slog.Logger
 }
 
 // Service runs the use cases of payments-api, and the recovery of
