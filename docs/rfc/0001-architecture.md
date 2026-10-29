@@ -82,10 +82,10 @@ sequenceDiagram
 ### 5.1 Accepting and authorizing
 
 1. `payments-api` authenticates the API key, checks that the merchant is active, and validates the input and the amount limits. A failure answers `400`, `401` or `422` and creates nothing.
-2. If the circuit breaker is open, or the instance already has its maximum of payments in flight, it answers `503` with `Retry-After` and creates nothing (section 5.4).
-3. **T1.** In one transaction, it inserts the payment as `PROCESSING` with `INSERT … ON CONFLICT (merchant_id, idempotency_key) DO NOTHING`, with epoch 1, and with a lease: if no answer is recorded within 15 s, the recovery takes the payment over. The same transaction writes the first history row and records attempt 1, before the call.
-   - If the key already exists, the request is a retry (section 6).
+2. **T1.** In one transaction, it inserts the payment as `PROCESSING` with `INSERT … ON CONFLICT (merchant_id, idempotency_key) DO NOTHING`, with epoch 1, and with a lease: if no answer is recorded within 15 s, the recovery takes the payment over.
+   - If the key already exists, the request is a retry and gets its payment (section 6). A retry never goes through the gate below, so a merchant that lost a response always gets the payment back.
    - If the order already has a live payment, the unique index on orders rejects the insert, and the answer is `409 order_has_active_payment`.
+3. **The gate.** For a new payment, still inside T1, it checks the circuit breaker and the payments the instance has in flight (section 5.4). Both live in memory, so the check costs no round trip. If the breaker is open or the instance is at its limit, T1 rolls back and the answer is `503` with `Retry-After`: nothing is created, and the key stays free. Otherwise, T1 writes the first history row, records attempt 1 before the call, and commits.
 4. **The call.** It calls the acquirer with the payment id as the idempotency key and a 5 s timeout. No database connection is held while waiting.
 5. **T2.** It records the answer (section 5.2) and responds:
    - `201` with `APPROVED`, `DECLINED`, or `FAILED` with reason `acquirer_rejected`;
@@ -124,8 +124,9 @@ Each answer from the acquirer falls into one class:
 - **Circuit breaker.** Each instance of `payments-api` and `payments-worker` has one.
   - After 5 consecutive answers that are uncertain or not sent, from any payments, it opens for 30 s.
   - While it is open, `payments-api` answers new payments with `503` and `Retry-After` without creating them, and the recovery holds its attempts. The authorization window keeps running.
+  - Until it opens, an outage is discovered by the calls themselves: the few payments created before the breaker opens answer `202`, and the recovery finishes them. No call can tell that the acquirer is down before trying.
   - After the cool-down, a single call probes the acquirer: a definite answer closes the breaker, and a failure opens it again. Any definite answer resets the count.
-- **Load shedding.** Each instance of `payments-api` has at most 512 payments in flight at the acquirer. Beyond that, it answers `503` with `Retry-After` before doing any work, so a slow acquirer cannot pile up requests without limit.
+- **Load shedding.** Each instance of `payments-api` has at most 512 payments in flight at the acquirer. Beyond that, it answers new payments with `503` and `Retry-After`, so a slow acquirer cannot pile up requests without limit. Like the breaker, the limit is checked inside T1, after the key, so retries of existing payments are always answered.
 
 ### 5.5 Recovery
 
@@ -164,7 +165,7 @@ The chain is 5 s < 15 s < 20 s: a call always ends before its lease expires, and
 | The acquirer approves and T2 fails | The API answers `202`. The recovery repeats the call with the same key and gets the same approval. |
 | The acquirer answers late | The API answers `202` after its timeout. The recovery repeats the call and gets the answer the acquirer stored. |
 | The acquirer never answers | Attempts, then the reversal, then `FAILED`. |
-| The acquirer is down | The breaker opens: new payments get `503` and nothing is created; the payments in progress wait. |
+| The acquirer is down | The first calls fail and their payments answer `202`. After 5 failures the breaker opens: from then on, new payments get `503` and nothing is created, and the payments in progress wait. |
 | A worker is slow and another claims the same payment | Both may call with the same key, which the acquirer deduplicates. Only the latest epoch can write. |
 | Kafka is down | Payments are authorized and answered as usual. Their events wait in the outbox, and webhooks are delivered when Kafka is back. |
 | The relay dies after publishing, before deleting | The batch is published twice, and the webhooks service discards the events it already has. |

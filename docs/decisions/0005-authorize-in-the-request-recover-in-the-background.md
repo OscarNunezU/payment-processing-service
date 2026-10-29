@@ -20,7 +20,7 @@ A synchronous API alone is not enough either. A request can be cut at the worst 
 - **The answer depends on what the acquirer said:**
   - `201` with the final state when the acquirer answers;
   - `202` with `PROCESSING` when the answer is not clear;
-  - `503` with `Retry-After`, creating nothing, when the circuit breaker is open or the instance is at its limit.
+  - `503` with `Retry-After`, creating nothing, when the circuit breaker is open or the instance is at its limit. The check runs inside T1, after the insert finds whether the key is new, so a retry of an existing payment always gets that payment.
 - **A recovery worker finishes what the request could not.** It claims the payments whose lease expired from Postgres, with `FOR UPDATE SKIP LOCKED` and epochs, repeats the call with the same key, and reverses when the outcome stays unknown.
 - **Kafka only carries the final events** to the webhooks service and future consumers. The payment path depends on Postgres and the acquirer only.
 - **The `PENDING` status and the `expired` reason disappear.** A payment starts in `PROCESSING`. An authorization window of 2 minutes replaces the expiry, so nothing is authorized late.

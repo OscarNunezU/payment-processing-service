@@ -116,7 +116,7 @@ Each of them is in the [roadmap](roadmap.md), with what it would change.
 | NFR01 | The service adds at most 50 ms (p99) to the acquirer's latency. When the acquirer does not answer, `POST /v1/payments` answers within the acquirer's timeout plus that margin. |
 | NFR02 | Target load: 500 payments per second sustained on one machine, with an acquirer that answers in 300 ms. Each API instance caps the payments it has in flight at the acquirer, answers `503` with `Retry-After` beyond that cap, and adding instances adds capacity. |
 | NFR03 | If Kafka is down, payments are still authorized and answered. Their events wait in the outbox, and the webhooks are delivered when Kafka comes back. No event is lost. |
-| NFR04 | If the acquirer is slow, a request waits at most the acquirer's timeout. If it is down, new payments are refused at once with `503`, and nothing is left half-created. |
+| NFR04 | If the acquirer is slow, a request waits at most the acquirer's timeout. If it is down, the breaker opens after a few failed calls; from then on, new payments are refused at once with `503` and nothing is created, while retries of existing payments still get their payment. The few payments created before the breaker opens answer `202` and are finished in the background. |
 | NFR05 | Any instance may stop at any moment without losing a payment or authorizing one twice. |
 | NFR06 | The service never receives, stores or logs a card number. |
 | NFR07 | A payment can be followed in a single trace from the request to the webhook, and its logs carry the payment id and the trace id. |
@@ -228,7 +228,9 @@ Feature: Acquirer failures
   Scenario: The acquirer is down
     Given the acquirer refuses connections for 20 seconds
     When payments are made during that time
-    Then the circuit breaker opens, and new payments answer 503 with Retry-After without being created
+    Then the first payments answer 202, until the circuit breaker opens
+    And from then on, new payments answer 503 with Retry-After without being created
+    And a retry of a payment created before still gets that payment
     And once the acquirer is back, payments answer 201 APPROVED
 
 Feature: Service failures
