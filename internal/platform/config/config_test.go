@@ -86,6 +86,22 @@ func TestEveryProblemIsReportedAtOnce(t *testing.T) {
 	}
 }
 
+func TestDurationUpToRejectsLongerValues(t *testing.T) {
+	env := from(map[string]string{"TIMEOUT": "10s", "LONGER": "10.001s"})
+	if got := env.DurationUpTo("TIMEOUT", time.Second, 10*time.Second); got != 10*time.Second {
+		t.Errorf("DurationUpTo = %s at its limit, want 10s", got)
+	}
+	if err := env.Err(); err != nil {
+		t.Fatalf("Err = %v at the limit, want nil", err)
+	}
+	if got := env.DurationUpTo("LONGER", time.Second, 10*time.Second); got != time.Second {
+		t.Errorf("DurationUpTo = %s past its limit, want the default", got)
+	}
+	if err := env.Err(); err == nil || !strings.Contains(err.Error(), "LONGER must be at most 10s") {
+		t.Errorf("Err = %v, want LONGER rejected", err)
+	}
+}
+
 func TestDurationAndIntRejectZeroAndNegatives(t *testing.T) {
 	env := from(map[string]string{"TIMEOUT": "0s", "WORKERS": "-1"})
 	env.Duration("TIMEOUT", time.Second)

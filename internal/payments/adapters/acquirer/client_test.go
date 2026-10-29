@@ -130,3 +130,53 @@ func TestEveryAnswerReachesTheBreaker(t *testing.T) {
 		t.Error("5 uncertain answers in a row did not open the breaker")
 	}
 }
+
+func TestAReversalGoesToTheKeyOfThePayment(t *testing.T) {
+	var method, path, auth, key string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, auth, key = r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Idempotency-Key")
+		_, _ = w.Write([]byte(`{"key":"pay-1","status":"reversed","outcome":"approved"}`))
+	}))
+	defer srv.Close()
+
+	a := NewClient(srv.URL, "sk_sim", time.Second, newBreaker()).Reverse(t.Context(), "pay-1")
+	if a.Outcome != domain.OutcomeReversed || a.ResponseCode != "200" || a.Latency <= 0 {
+		t.Errorf("got %+v, want a confirmed reversal with its latency", a)
+	}
+	if method != http.MethodPost || path != "/v1/authorizations/pay-1/reversal" || auth != "Bearer sk_sim" || key != "" {
+		t.Errorf("the acquirer got %s %s, auth %q, key %q", method, path, auth, key)
+	}
+}
+
+func TestOnlyAConfirmationReversesThePayment(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		code   string
+	}{
+		{"unavailable", 503, `{"error":{"code":"unavailable"}}`, "503 unavailable"},
+		{"rejected", 400, `{"error":{"code":"invalid_key"}}`, "400 invalid_key"},
+		{"a 200 that does not confirm it", 200, `{"status":"pending"}`, "200"},
+		{"a body that is not JSON", 200, `<html>`, "200"},
+	}
+	for _, tt := range tests {
+		srv := answering(t, tt.status, tt.body)
+		a := NewClient(srv.URL, "sk_sim", time.Second, newBreaker()).Reverse(t.Context(), "pay-1")
+		if a.Outcome != domain.OutcomeUncertain || a.ResponseCode != tt.code {
+			t.Errorf("%s: got %s %q, want uncertain %q", tt.name, a.Outcome, a.ResponseCode, tt.code)
+		}
+	}
+}
+
+func TestReversalsDoNotCountForTheBreaker(t *testing.T) {
+	srv := answering(t, 503, ``)
+	b := newBreaker()
+	c := NewClient(srv.URL, "sk_sim", time.Second, b)
+	for range 5 {
+		c.Reverse(t.Context(), "pay-1")
+	}
+	if b.Open() {
+		t.Error("5 failed reversals opened the breaker")
+	}
+}

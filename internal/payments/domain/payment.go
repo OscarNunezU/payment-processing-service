@@ -77,8 +77,11 @@ type Payment struct {
 	// LeaseUntil is when the recovery may take the payment over, while it is
 	// PROCESSING.
 	LeaseUntil time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ReversalStartedAt is when the first reversal was recorded, before it
+	// was sent. From then on, the payment is only reversed.
+	ReversalStartedAt time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // IsPaymentID reports whether s is a payment id in its canonical form, the
@@ -190,8 +193,11 @@ type HistoryKind string
 const (
 	// HistoryStatus is a change of status.
 	HistoryStatus HistoryKind = "status"
-	// HistoryAcquirerCall is a call to the acquirer, with its outcome.
+	// HistoryAcquirerCall is an authorization sent to the acquirer, with its
+	// outcome.
 	HistoryAcquirerCall HistoryKind = "acquirer_call"
+	// HistoryReversal is a reversal sent to the acquirer, with its outcome.
+	HistoryReversal HistoryKind = "reversal"
 )
 
 // HistoryEntry is one line of a payment's history (FR15).

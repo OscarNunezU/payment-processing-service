@@ -1,7 +1,7 @@
-// Package acquirer is the client of the acquirer: it authorizes payments over
-// HTTP and classifies every answer (RFC 0001, section 5.3), and it guards the
-// acquirer with a circuit breaker and a limit of payments in flight (section
-// 5.4).
+// Package acquirer is the client of the acquirer: it authorizes and reverses
+// payments over HTTP and classifies every answer (RFC 0001, section 5.3), and
+// it guards the acquirer with a circuit breaker and a limit of payments in
+// flight (section 5.4).
 package acquirer
 
 import (
@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"syscall"
 	"time"
@@ -21,7 +22,7 @@ import (
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/domain"
 )
 
-// Client calls the acquirer's authorization API.
+// Client calls the acquirer's authorization and reversal API.
 type Client struct {
 	baseURL string
 	key     string
@@ -84,27 +85,75 @@ func (c *Client) authorize(ctx context.Context, r app.AuthorizationRequest) doma
 	if err != nil {
 		return domain.Answer{Outcome: domain.OutcomeNotSent, ResponseCode: "unencodable_request"}
 	}
+	status, raw, failure := c.post(ctx, "/v1/authorizations", r.Key, body)
+	if failure != nil {
+		return *failure
+	}
+	return classify(status, raw)
+}
+
+// Reverse releases the authorization of key, if there is one, and leaves the
+// key unusable at the acquirer (RFC 0001, section 5.3). Only an answer that
+// confirms the reversal is OutcomeReversed; any other, a rejection included,
+// leaves it unconfirmed, and the recovery sends it again.
+//
+// Reversals do not count for the breaker: the recovery sends them whatever
+// its state, since they are what keeps a failed payment from being charged.
+func (c *Client) Reverse(ctx context.Context, key string) domain.Answer {
+	start := c.now()
+	a := c.reverse(ctx, key)
+	a.Latency = c.now().Sub(start)
+	return a
+}
+
+func (c *Client) reverse(ctx context.Context, key string) domain.Answer {
+	status, raw, failure := c.post(ctx, "/v1/authorizations/"+url.PathEscape(key)+"/reversal", "", nil)
+	if failure != nil {
+		return *failure
+	}
+	code := strconv.Itoa(status)
+	var answer struct {
+		Status string `json:"status"`
+	}
+	if status == http.StatusOK && json.Unmarshal(raw, &answer) == nil && answer.Status == "reversed" {
+		return domain.Answer{Outcome: domain.OutcomeReversed, ResponseCode: code}
+	}
+	if c := errorCode(raw); c != "" {
+		code += " " + c
+	}
+	return domain.Answer{Outcome: domain.OutcomeUncertain, ResponseCode: code}
+}
+
+// post sends body to path, with the idempotency key when there is one, and
+// returns the answer once it arrived whole. A call that got no whole answer
+// comes back as failure instead, already classified.
+func (c *Client) post(ctx context.Context, path, idempotencyKey string, body []byte) (int, []byte, *domain.Answer) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/authorizations", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
-		return domain.Answer{Outcome: domain.OutcomeNotSent, ResponseCode: "invalid_request"}
+		return 0, nil, &domain.Answer{Outcome: domain.OutcomeNotSent, ResponseCode: "invalid_request"}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.key)
-	req.Header.Set("Idempotency-Key", r.Key)
-	req.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return failedCall(err)
+		failure := failedCall(err)
+		return 0, nil, &failure
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		// The acquirer answered, but the answer did not arrive whole.
-		return domain.Answer{Outcome: domain.OutcomeUncertain, ResponseCode: strconv.Itoa(resp.StatusCode) + " unreadable"}
+		return 0, nil, &domain.Answer{Outcome: domain.OutcomeUncertain, ResponseCode: strconv.Itoa(resp.StatusCode) + " unreadable"}
 	}
-	return classify(resp.StatusCode, raw)
+	return resp.StatusCode, raw, nil
 }
 
 // failedCall classifies a call that got no answer. Only a refused connection

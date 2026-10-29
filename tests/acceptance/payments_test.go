@@ -1,16 +1,19 @@
 // Package acceptance runs the PRD's acceptance scenarios (PRD, section 12)
-// through the real HTTP API, the use cases, Postgres, and the acquirer
-// simulator over HTTP, all in the test process.
+// through the real HTTP API, the recovery, the use cases, Postgres, and the
+// acquirer simulator over HTTP, all in the test process.
 package acceptance
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +23,11 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/OscarNunezU/payment-processing-service/internal/acquirersim"
+	"github.com/OscarNunezU/payment-processing-service/internal/events"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/acquirer"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/httpapi"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/postgres"
+	"github.com/OscarNunezU/payment-processing-service/internal/payments/adapters/recovery"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/app"
 	"github.com/OscarNunezU/payment-processing-service/internal/payments/domain"
 	"github.com/OscarNunezU/payment-processing-service/internal/platform/migrate"
@@ -35,6 +40,7 @@ const (
 	keyUno        = "sk_test_scenario_tienda_uno"
 	keyDos        = "sk_test_scenario_tienda_dos"
 	keySuspendida = "sk_test_scenario_suspendida"
+	tiendaUno     = "00000000-0000-4000-8000-000000000001"
 
 	simSecret      = "sk_sim_test"
 	simPublishable = "pk_sim_test"
@@ -45,18 +51,31 @@ const (
 	unavailableOnce   = "4000000000000127"
 	answersLate       = "4000000000000135"
 	rejectsTheRequest = "4000000000000143"
+	neverAnswers      = "4000000000000150"
 )
 
 type service struct {
 	url    string
 	db     *pgxpool.Pool
+	store  *postgres.Store
 	public *acquirersim.Switch
 	admin  string
 }
 
-// start runs the API on a fresh database with three merchants (two active
-// and one suspended), against an acquirer simulator. The client gives up on
-// the acquirer after 500 ms, and the simulator's late answers take 1.5 s.
+// The clients give up on the acquirer after 500 ms, the simulator's late
+// answers take 1.5 s, and a breaker that opens waits 2 s before its probe.
+// The jitter is 0, so the waits after attempts 1, 2 and 3 are 1, 2 and 4 s.
+const (
+	clientTimeout   = 500 * time.Millisecond
+	breakerCooldown = 2 * time.Second
+)
+
+func noJitter() float64 { return 0 }
+
+var quiet = slog.New(slog.DiscardHandler)
+
+// start runs the API and the recovery on a fresh database with three
+// merchants (two active and one suspended), against an acquirer simulator.
 func start(t *testing.T) *service {
 	t.Helper()
 	url := pgtest.Start(t)
@@ -84,7 +103,7 @@ func start(t *testing.T) *service {
 		merchant domain.Merchant
 		key      string
 	}{
-		{domain.Merchant{ID: "00000000-0000-4000-8000-000000000001", LegalName: "Tienda Uno SpA", RUT: "76543210-3", Status: domain.MerchantActive, MaxAmount: limits}, keyUno},
+		{domain.Merchant{ID: tiendaUno, LegalName: "Tienda Uno SpA", RUT: "76543210-3", Status: domain.MerchantActive, MaxAmount: limits}, keyUno},
 		{domain.Merchant{ID: "00000000-0000-4000-8000-000000000002", LegalName: "Tienda Dos Limitada", RUT: "77123456-9", Status: domain.MerchantActive, MaxAmount: limits}, keyDos},
 		{domain.Merchant{ID: "00000000-0000-4000-8000-000000000003", LegalName: "Comercio Suspendido SpA", RUT: "76987654-5", Status: domain.MerchantSuspended, MaxAmount: limits}, keySuspendida},
 	} {
@@ -93,7 +112,6 @@ func start(t *testing.T) *service {
 		}
 	}
 
-	quiet := slog.New(slog.DiscardHandler)
 	sim := acquirersim.New(acquirersim.Config{
 		SecretKey: simSecret, PublishableKey: simPublishable, LateAnswer: 1500 * time.Millisecond, TokenTTL: time.Hour,
 	}, quiet)
@@ -106,22 +124,60 @@ func start(t *testing.T) *service {
 	admin := httptest.NewServer(sim.AdminHandler())
 	t.Cleanup(admin.Close)
 
-	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
+	s := &service{db: db, store: store, public: public, admin: admin.URL}
+	s.url = s.serveAPI(t, store)
+	s.runRecovery(t)
+	return s
+}
+
+// serveAPI serves the API, on payments as its store, and returns its URL.
+func (s *service) serveAPI(t *testing.T, payments app.Payments) string {
+	t.Helper()
+	breaker := acquirer.NewBreaker(5, breakerCooldown, time.Now)
 	svc := app.NewService(app.Deps{
-		Merchants: store,
-		Payments:  store,
-		Acquirer:  acquirer.NewClient("http://"+public.Addr(), simSecret, 500*time.Millisecond, breaker),
+		Merchants: s.store,
+		Payments:  payments,
+		Acquirer:  acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, breaker),
 		Gate:      acquirer.NewGate(breaker, 512),
 		NewID:     func() string { return uuid.NewV7().String() },
 		Now:       time.Now,
-		Random:    rand.Float64,
+		Random:    noJitter,
 		Log:       quiet,
 	})
 	mux := http.NewServeMux()
 	httpapi.New(svc, quiet).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &service{url: srv.URL, db: db, public: public, admin: admin.URL}
+	return srv.URL
+}
+
+// runRecovery runs the recovery of payments-worker, with a breaker of its
+// own, scanning every 20 ms, until the test ends.
+func (s *service) runRecovery(t *testing.T) {
+	t.Helper()
+	breaker := acquirer.NewBreaker(5, breakerCooldown, time.Now)
+	svc := app.NewService(app.Deps{
+		Payments: s.store,
+		Acquirer: acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, breaker),
+		Breaker:  breaker,
+		NewID:    func() string { return uuid.NewV7().String() },
+		Now:      time.Now,
+		Random:   noJitter,
+		Log:      quiet,
+	})
+	loop := recovery.New(svc, quiet)
+	loop.Interval = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		loop.Run(ctx)
+		close(done)
+	}()
+	// Registered after the database's cleanup, so it runs before it.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 // answer is what a test needs from a response.
@@ -136,9 +192,25 @@ type answer struct {
 	Card       *struct {
 		Last4 string `json:"last4"`
 	} `json:"card"`
+	History []struct {
+		Kind    string `json:"kind"`
+		Attempt int    `json:"attempt"`
+		Outcome string `json:"outcome"`
+	} `json:"history"`
 	Error struct {
 		Code string `json:"code"`
 	} `json:"error"`
+}
+
+// calls returns the outcomes of the payment's calls of kind, in order.
+func (a answer) calls(kind string) []string {
+	var outcomes []string
+	for _, h := range a.History {
+		if h.Kind == kind {
+			outcomes = append(outcomes, h.Outcome)
+		}
+	}
+	return outcomes
 }
 
 // send does req and decodes its JSON answer into out, when out is not nil. It
@@ -208,6 +280,59 @@ func (s *service) get(t *testing.T, apiKey, id string) answer {
 	return a
 }
 
+// settle waits until the payment reaches a final state, and returns it.
+func (s *service) settle(t *testing.T, apiKey, id string) answer {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		a := s.get(t, apiKey, id)
+		if a.Status.Final() {
+			return a
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("payment %s is still %s after 20 s: %+v", id, a.Status, a)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// bookEntry is what the acquirer's book holds for a key.
+type bookEntry struct {
+	Key      string `json:"key"`
+	Outcome  string `json:"outcome"`
+	Reversed bool   `json:"reversed"`
+	Live     bool   `json:"live"`
+}
+
+// book returns the entries of the acquirer's book for key.
+func (s *service) book(t *testing.T, key string) []bookEntry {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.admin+"/admin/book", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var book struct {
+		Data []bookEntry `json:"data"`
+	}
+	s.send(t, req, &book)
+	var entries []bookEntry
+	for _, e := range book.Data {
+		if e.Key == key {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// expire ends the lease of a payment now, so the test does not wait the 15 s
+// after which the recovery takes over a payment whose request died.
+func (s *service) expire(t *testing.T, id string) {
+	t.Helper()
+	if _, err := s.db.Exec(t.Context(), `UPDATE payments SET lease_until = $2 WHERE id = $1`, id, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (s *service) setFaults(t *testing.T, faults map[string]any) {
 	t.Helper()
 	raw, _ := json.Marshal(faults)
@@ -259,28 +384,62 @@ func TestARejectedRequest(t *testing.T) {
 	}
 }
 
-// Feature: Acquirer failures. Scenario: A temporary error. The recovery that
-// finishes the payment arrives in step 6 of the plan.
-func TestATemporaryErrorAnswersProcessing(t *testing.T) {
+// Feature: Acquirer failures. Scenario: A temporary error.
+func TestATemporaryError(t *testing.T) {
 	s := start(t)
 	a := s.pay(t, keyUno, "k1", "o1", s.tokenize(t, unavailableOnce), 15000)
 	if a.httpStatus != http.StatusAccepted || a.Status != domain.PaymentProcessing {
-		t.Errorf("got %+v, want 202 PROCESSING", a)
+		t.Fatalf("got %+v, want 202 PROCESSING", a)
+	}
+	end := s.settle(t, keyUno, a.ID)
+	if end.Status != domain.PaymentApproved || strings.Join(end.calls("acquirer_call"), " ") != "uncertain approved" {
+		t.Errorf("got %+v, want APPROVED on the second attempt, in the background", end)
 	}
 }
 
 // Feature: Acquirer failures. Scenario: Timeout with a late approval. The
 // acquirer approves after the client gave up: the payment answers 202, and
-// the approval waits at the acquirer for the recovery's retry.
-func TestATimeoutAnswersProcessing(t *testing.T) {
+// the retry with the same key gets the approval the acquirer stored.
+func TestATimeoutWithALateApproval(t *testing.T) {
 	s := start(t)
 	start := time.Now()
 	a := s.pay(t, keyUno, "k1", "o1", s.tokenize(t, answersLate), 15000)
 	if a.httpStatus != http.StatusAccepted || a.Status != domain.PaymentProcessing {
-		t.Errorf("got %+v, want 202 PROCESSING", a)
+		t.Fatalf("got %+v, want 202 PROCESSING", a)
 	}
-	if took := time.Since(start); took > 1200*time.Millisecond {
+	if took := time.Since(start); took > clientTimeout+700*time.Millisecond {
 		t.Errorf("the request took %s, want it bounded by the client's timeout", took)
+	}
+	if end := s.settle(t, keyUno, a.ID); end.Status != domain.PaymentApproved {
+		t.Errorf("got %+v, want APPROVED", end)
+	}
+	if book := s.book(t, a.ID); len(book) != 1 || !book[0].Live {
+		t.Errorf("the acquirer's book has %+v, want exactly one live authorization", book)
+	}
+}
+
+// Feature: Acquirer failures. Scenario: No answer at all.
+func TestNoAnswerAtAll(t *testing.T) {
+	s := start(t)
+	a := s.pay(t, keyUno, "k1", "o1", s.tokenize(t, neverAnswers), 15000)
+	if a.httpStatus != http.StatusAccepted {
+		t.Fatalf("got %+v, want 202", a)
+	}
+	end := s.settle(t, keyUno, a.ID)
+	if end.Status != domain.PaymentFailed || end.Reason != "acquirer_unavailable" ||
+		len(end.calls("acquirer_call")) != 3 || strings.Join(end.calls("reversal"), " ") != "reversed" {
+		t.Errorf("got %+v, want FAILED acquirer_unavailable after 3 attempts and a reversal", end)
+	}
+	if book := s.book(t, a.ID); len(book) != 1 || !book[0].Reversed || book[0].Live {
+		t.Errorf("the acquirer's book has %+v, want the key reversed, with nothing live", book)
+	}
+
+	// A request delayed in the network arrives after the reversal.
+	var late answer
+	status, _ := s.post(t, "http://"+s.public.Addr()+"/v1/authorizations", simSecret, map[string]string{"Idempotency-Key": a.ID},
+		map[string]any{"token": s.tokenize(t, approves), "amount": 15000, "currency": "CLP"}, &late)
+	if status != http.StatusConflict || late.Error.Code != "reversed" {
+		t.Errorf("a late authorization got %d %s, want 409 reversed", status, late.Error.Code)
 	}
 }
 
@@ -292,14 +451,20 @@ func TestTheAcquirerIsDown(t *testing.T) {
 	if before.httpStatus != http.StatusCreated {
 		t.Fatalf("before the outage: got %+v", before)
 	}
+	tokens := make([]string, 5)
+	for i := range tokens {
+		tokens[i] = s.tokenize(t, approves)
+	}
 	s.setFaults(t, map[string]any{"down": true})
 
 	// The first payments discover the outage: they are created and answer 202.
-	for i := range 5 {
-		a := s.pay(t, keyUno, "k"+string(rune('a'+i)), "o"+string(rune('a'+i)), "tok_any", 15000)
+	var inDoubt []string
+	for i, token := range tokens {
+		a := s.pay(t, keyUno, fmt.Sprintf("k%d", i), fmt.Sprintf("o%d", i), token, 15000)
 		if a.httpStatus != http.StatusAccepted {
 			t.Fatalf("payment %d before the breaker opens: got %+v, want 202", i, a)
 		}
+		inDoubt = append(inDoubt, a.ID)
 	}
 	created := s.count(t, `SELECT count(*) FROM payments`)
 
@@ -314,6 +479,85 @@ func TestTheAcquirerIsDown(t *testing.T) {
 	// A retry of a payment created before still gets it.
 	if again := s.pay(t, keyUno, "k-before", "o-before", token, 15000); again.httpStatus != http.StatusCreated || !again.replayed || again.ID != before.ID {
 		t.Errorf("a retry with the breaker open: got %+v, want its payment, replayed", again)
+	}
+
+	// Once the acquirer is back, the breaker's probe lets payments through
+	// again, and the payments in doubt are finished in the background.
+	s.setFaults(t, map[string]any{"down": false})
+	after := s.tokenize(t, approves)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		a := s.pay(t, keyUno, "k-after", "o-after", after, 15000)
+		if a.httpStatus == http.StatusCreated && a.Status == domain.PaymentApproved {
+			break
+		}
+		if a.httpStatus != http.StatusServiceUnavailable || time.Now().After(deadline) {
+			t.Fatalf("a payment after the outage: got %+v, want 201 APPROVED once the breaker probes", a)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, id := range inDoubt {
+		if end := s.settle(t, keyUno, id); end.Status != domain.PaymentApproved || end.calls("acquirer_call")[0] != "not_sent" {
+			t.Errorf("a payment in doubt: got %+v, want APPROVED after its refused first attempt", end)
+		}
+	}
+}
+
+// Feature: Service failures. Scenario: The API dies after sending. The test
+// does what the API did up to its death: T1, and the call to the acquirer,
+// which approves. The answer is never recorded.
+func TestTheAPIDiesAfterSending(t *testing.T) {
+	s := start(t)
+	r := domain.PaymentRequest{IdempotencyKey: "k1", OrderID: "o1", Amount: 15000, Currency: "CLP", CardToken: s.tokenize(t, approves)}
+	p := domain.NewPayment(uuid.NewV7().String(), domain.Merchant{ID: tiendaUno}, r, time.Now().UTC().Truncate(time.Microsecond))
+	if _, _, err := s.store.InsertPayment(t.Context(), p, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	client := acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, acquirer.NewBreaker(5, breakerCooldown, time.Now))
+	sent := client.Authorize(t.Context(), app.AuthorizationRequest{Key: p.ID, Token: p.CardToken, Amount: p.Amount, Currency: p.Currency, Reference: p.OrderID})
+	if sent.Outcome != domain.OutcomeApproved {
+		t.Fatalf("the call before the crash: got %+v", sent)
+	}
+
+	// Meanwhile, the merchant retries and gets the payment in progress.
+	if again := s.pay(t, keyUno, "k1", "o1", r.CardToken, 15000); again.httpStatus != http.StatusAccepted || again.ID != p.ID {
+		t.Errorf("a retry before the recovery: got %+v, want 202 with the payment", again)
+	}
+	s.expire(t, p.ID)
+	end := s.settle(t, keyUno, p.ID)
+	if end.Status != domain.PaymentApproved || end.AuthCode != sent.AuthorizationCode {
+		t.Errorf("got %+v, want APPROVED with the code of the first call %s", end, sent.AuthorizationCode)
+	}
+	if book := s.book(t, p.ID); len(book) != 1 || !book[0].Live {
+		t.Errorf("the acquirer's book has %+v, want exactly one authorization", book)
+	}
+}
+
+// failingT2 is a database that fails right after the acquirer answered.
+type failingT2 struct{ *postgres.Store }
+
+func (failingT2) RecordAnswer(context.Context, domain.Payment, domain.Answer, *events.PaymentEvent) error {
+	return errors.New("the database went away")
+}
+
+// Feature: Service failures. Scenario: The database fails after the approval.
+func TestTheDatabaseFailsAfterTheApproval(t *testing.T) {
+	s := start(t)
+	s.url = s.serveAPI(t, failingT2{s.store})
+	a := s.pay(t, keyUno, "k1", "o1", s.tokenize(t, approves), 15000)
+	if a.httpStatus != http.StatusAccepted || a.Status != domain.PaymentProcessing {
+		t.Fatalf("got %+v, want 202 PROCESSING", a)
+	}
+	s.expire(t, a.ID)
+	end := s.settle(t, keyUno, a.ID)
+	if end.Status != domain.PaymentApproved || len(end.calls("acquirer_call")) != 2 {
+		t.Errorf("got %+v, want APPROVED by the recovery's repeated call", end)
+	}
+	if book := s.book(t, a.ID); len(book) != 1 || !book[0].Live {
+		t.Errorf("the acquirer's book has %+v, want exactly one authorization", book)
+	}
+	if n := s.count(t, `SELECT count(*) FROM outbox WHERE headers ->> 'event-type' = 'payment.approved'`); n != 1 {
+		t.Errorf("got %d payment.approved events, want 1", n)
 	}
 }
 

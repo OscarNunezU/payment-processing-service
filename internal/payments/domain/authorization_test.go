@@ -9,6 +9,15 @@ var now = time.Date(2026, 10, 29, 13, 0, 0, 0, time.UTC)
 
 func half() float64 { return 0.5 }
 
+// RFC 0001, section 5.6: a call, even at the longest timeout allowed, ends
+// before its lease, with room for the writes around it.
+func TestTheTimeBudgetChains(t *testing.T) {
+	if AcquirerTimeout > MaxAcquirerTimeout || MaxAcquirerTimeout+2*2*time.Second > Lease {
+		t.Errorf("timeout %s, at most %s, lease %s: the lease does not cover the call and two 2 s writes",
+			AcquirerTimeout, MaxAcquirerTimeout, Lease)
+	}
+}
+
 func TestANewPaymentIsRecordedBeforeItsFirstCall(t *testing.T) {
 	p := NewPayment("p1", activeMerchant(), validRequest(), now)
 	if p.Status != PaymentProcessing || p.Attempts != 1 || p.Epoch != 1 || !p.LeaseUntil.Equal(now.Add(Lease)) {

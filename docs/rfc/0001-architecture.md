@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)) · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), and the recovery as built in step 6 · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 
@@ -116,46 +116,48 @@ Each answer from the acquirer falls into one class:
 - **The authorization window.** No new authorization is sent more than 2 minutes after the payment was created, so a customer who has left the checkout is never charged late. A payment that reaches the window without a definite answer is handled as if its attempts had run out.
 - When the attempts run out:
   - if every attempt was refused before it was sent, the payment ends `FAILED` with reason `acquirer_unavailable`, since nothing reached the acquirer;
-  - otherwise, a transaction records that the reversal started, conditional on the epoch, and only then is the reversal sent. Once the acquirer confirms it, the payment ends `FAILED` with reason `acquirer_unavailable`. A reversal that fails is retried by the recovery, with waits that double from 5 s up to 1 minute, and it never gives up.
+  - otherwise, a transaction records that the reversal started, conditional on the epoch, and only then is the reversal sent. Once the acquirer confirms it, the payment ends `FAILED` with reason `acquirer_unavailable`. A reversal that fails is retried by the recovery, with waits that double from 5 s up to 1 minute, and it never gives up. The wait is the time since the reversal started, between those bounds, so it doubles without a counter.
+  - Once its reversal started, a payment is only reversed, never authorized again, and the database rejects an approval for it (section 7).
 - The acquirer keeps a tombstone for every reversed key and rejects any later authorization with it. A request delayed in the network therefore cannot authorize the payment after its reversal (section 10).
 
 ### 5.4 Circuit breaker and load shedding
 
 - **Circuit breaker.** Each instance of `payments-api` and `payments-worker` has one.
   - After 5 consecutive answers that are uncertain or not sent, from any payments, it opens for 30 s.
-  - While it is open, `payments-api` answers new payments with `503` and `Retry-After` without creating them, and the recovery holds its attempts. The authorization window keeps running.
+  - While it is open, `payments-api` answers new payments with `503` and `Retry-After` without creating them, and the recovery holds its attempts: a held payment keeps the lease of its claim, and is claimed again when it ends. The authorization window keeps running.
   - Until it opens, an outage is discovered by the calls themselves: the few payments created before the breaker opens answer `202`, and the recovery finishes them. No call can tell that the acquirer is down before trying.
   - After the cool-down, a single call probes the acquirer: a definite answer closes the breaker, and a failure opens it again. Any definite answer resets the count.
+  - Reversals neither wait for the breaker nor count for it: they are what keeps a failed payment from being charged, and they are few, with their own waits.
 - **Load shedding.** Each instance of `payments-api` has at most 512 payments in flight at the acquirer. Beyond that, it answers new payments with `503` and `Retry-After`, so a slow acquirer cannot pile up requests without limit. Like the breaker, the limit is checked inside T1, after the key, so retries of existing payments are always answered.
 
 ### 5.5 Recovery
 
-In each `payments-worker`, every second, the recovery claims the `PROCESSING` payments whose lease has expired, with `FOR UPDATE SKIP LOCKED`. A claim increments the epoch and moves the lease 15 s forward; the call to the acquirer happens after the claim's transaction commits. For each payment:
+In each `payments-worker`, every second, the recovery claims up to 100 `PROCESSING` payments whose lease has expired, with `FOR UPDATE SKIP LOCKED`, and claims again at once while the batches come back full. A claim increments the epoch and moves the lease 15 s forward; the call to the acquirer happens after the claim's transaction commits. For each payment:
 
 - if its reversal started, it sends the reversal again;
 - if it has attempts left and is inside its authorization window, it records a new attempt, repeats the authorization with the same key and records the answer as in section 5.2;
-- otherwise, its attempts have run out, and it follows section 5.3.
+- otherwise, its attempts have run out, and it follows section 5.3. Whether any attempt may have reached the acquirer comes from the history: only an attempt refused before it was sent did not, and an attempt without an outcome, cut by a crash, may have.
 
-It also raises an alert for any payment in `PROCESSING` for more than 5 minutes (INV04). The API and the recovery apply the same rules, implemented once in the use cases (ADR 0004). The recovery does not depend on Kafka, so it keeps working while Kafka is down.
+Every minute, it also raises an alert for any payment in `PROCESSING` for more than 5 minutes (INV04): a log line at level `ERROR`, with `alert=payments_unresolved`, the count and the oldest payment. The API and the recovery apply the same rules, implemented once in the use cases (ADR 0004). The recovery does not depend on Kafka, so it keeps working while Kafka is down. When the worker stops, the recovery claims nothing more, and finishes the payments it already claimed.
 
 ### 5.6 Time budget
 
 | Limit | Initial value |
 |---|---|
-| Acquirer call timeout | 5 s |
+| Acquirer call timeout | 5 s, and at most 10 s if configured |
 | Lease of a payment being authorized | 15 s |
-| Recovery scan | every second |
+| Recovery scan | every second, up to 100 payments per claim |
 | Attempts without a definite answer | 3, the first in the request |
 | Wait before a new attempt | 1–2 s, then 2–4 s |
 | Authorization window | 2 minutes from creation |
 | Reversal retries | from 5 s, doubling up to 1 minute |
 | Circuit breaker | opens after 5 failures, for 30 s |
 | Payments in flight per API instance | 512 |
-| Alert for an unresolved payment | 5 minutes |
+| Alert for an unresolved payment | 5 minutes, checked every minute |
 | Graceful shutdown | 20 s for each service |
 | Postgres statement and idle-in-transaction timeouts | 2 s and 5 s |
 
-The chain is 5 s < 15 s < 20 s: a call always ends before its lease expires, and a shutdown waits for the calls in flight. No transaction stays open during a call, so a slow acquirer never holds locks. The worst case for the merchant is a `202` about 5 s after the request.
+The chain is 5 s < 15 s < 20 s: a call always ends before its lease expires, and a shutdown waits for the calls in flight. The services refuse to start with a timeout above 10 s, so the lease also covers the writes before and after the call, each bounded by the 2 s statement timeout. No transaction stays open during a call, so a slow acquirer never holds locks. The worst case for the merchant is a `202` about 5 s after the request.
 
 ### 5.7 When something fails
 
@@ -198,7 +200,7 @@ The `payments` database:
 | `merchant_limits` | The maximum amount per payment, for each currency the merchant accepts |
 | `api_keys` | The merchant, the first characters and a SHA-256 hash of the secret, and the dates it was created and revoked |
 | `payments` | Id (UUIDv7, so ids sort by time), merchant, order id, idempotency key, request hash, amount, currency, card token, card brand and last 4, status, reason, authorization code, decline code, attempts, epoch, lease, reversal start, and timestamps |
-| `payment_history` | One row per status change and per call to the acquirer: kind, status, attempt, outcome, latency, response code and reason |
+| `payment_history` | One row per status change and per call to the acquirer, authorization or reversal: kind, status, attempt, outcome, latency, response code and reason |
 | `outbox` | Events waiting for the relay |
 
 The `webhooks` database:
@@ -223,9 +225,13 @@ CREATE UNIQUE INDEX payments_one_live_per_order
 -- A failed payment always says why, and only a failed one has a reason.
 ALTER TABLE payments ADD CONSTRAINT payments_reason_when_failed
     CHECK ((status = 'FAILED') = (reason IS NOT NULL));
+
+-- INV03: once a reversal started, the payment can only end FAILED.
+ALTER TABLE payments ADD CONSTRAINT payments_reversal_ends_failed
+    CHECK (reversal_started_at IS NULL OR status IN ('PROCESSING', 'FAILED'));
 ```
 
-Other indexes serve the list, newest first per merchant, and the recovery's scan of the `PROCESSING` payments whose lease expired. Migration 00003 created payments with a `PENDING` status for the earlier design; the migration of step 5 removes it, and adds the columns of the recovery.
+Other indexes serve the list, newest first per merchant, and the recovery's scan of the `PROCESSING` payments whose lease expired. Migration 00003 created payments with a `PENDING` status for the earlier design; the migration of step 5 removes it, and adds the columns of the recovery. The migration of step 6 adds the reversals to the history.
 
 ## 8. Kafka
 
@@ -351,7 +357,7 @@ Location: /v1/payments/01a187cb…
 ## 13. Observability
 
 - **Traces:** OpenTelemetry. The trace context goes from the request to the call to the acquirer, to the outbox row, from the row to the Kafka headers, and from there to the webhook, so a payment is a single trace from the `POST` to the webhook (NFR07). The services send their spans to Jaeger over OTLP.
-- **Logs:** JSON with the trace id, the payment id and the merchant id. Card tokens and API keys are never logged.
+- **Logs:** JSON with the trace id, the payment id and the merchant id. Card tokens and API keys are never logged. The alert of INV04 is a log line (section 5.5), until metrics arrive.
 - **Metrics:** not in this iteration. k6 measures latency and throughput, and the roadmap adds Prometheus.
 
 ## 14. Security
@@ -422,8 +428,6 @@ One pull request per step. Each one leaves `main` working and passes its review 
 | 7 | Webhooks | The consumer, deliveries, signatures and retries | The endpoint-down scenario passes |
 | 8 | Checkout and panel | The web app | A test payment can be made and followed from the browser |
 | 9 | Proof | The end-to-end suite in CI, the consistency checker under faults, the k6 results and the final README | Every scenario passes, and the results are in the README |
-
-Between steps 5 and 6, a payment with an unclear answer stays `PROCESSING` until the recovery arrives: the service never fails one blindly in the meantime.
 
 ## 18. Alternatives considered
 

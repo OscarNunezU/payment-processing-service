@@ -54,6 +54,44 @@ type Payments interface {
 	History(ctx context.Context, paymentID string) ([]domain.HistoryEntry, error)
 	// ListPayments returns up to f.Limit payments that match f, newest first.
 	ListPayments(ctx context.Context, f ListFilter) ([]domain.Payment, error)
+
+	// The recovery (RFC 0001, section 5.5). Every write but the claim applies
+	// only if the stored payment is still PROCESSING with p's epoch, and
+	// returns ErrStaleEpoch otherwise.
+
+	// ClaimDue takes over up to limit PROCESSING payments whose lease expired
+	// at now: it increments their epoch and moves their lease domain.Lease
+	// forward. Payments that another worker is claiming are skipped.
+	ClaimDue(ctx context.Context, now time.Time, limit int) ([]Claim, error)
+	// StartAttempt records attempt p.Attempts at at, before its call.
+	StartAttempt(ctx context.Context, p domain.Payment, at time.Time) error
+	// StartReversal records a reversal at at, before it is sent, and when the
+	// reversal started: p.ReversalStartedAt.
+	StartReversal(ctx context.Context, p domain.Payment, at time.Time) error
+	// RecordReversal records the answer to the last reversal and p's new
+	// state, and, when final is not nil, the final event in the outbox.
+	RecordReversal(ctx context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error
+	// Finish records p's final state, reached without a call, and its event.
+	Finish(ctx context.Context, p domain.Payment, final events.PaymentEvent) error
+	// Unresolved summarizes the payments still PROCESSING that were created
+	// before createdBefore.
+	Unresolved(ctx context.Context, createdBefore time.Time) (Unresolved, error)
+}
+
+// Claim is a payment the recovery took over.
+type Claim struct {
+	Payment domain.Payment
+	// Reached is whether any of its attempts may have reached the acquirer:
+	// false only when every one was refused before it was sent.
+	Reached bool
+}
+
+// Unresolved is the alert of the recovery (INV04): how many payments are
+// still PROCESSING too long after they were created, and the oldest of them.
+type Unresolved struct {
+	Count           int
+	OldestID        string
+	OldestCreatedAt time.Time
 }
 
 // ListFilter selects a page of a merchant's payments.
@@ -77,7 +115,9 @@ type Deps struct {
 	Merchants Merchants
 	Payments  Payments
 	Acquirer  Acquirer
-	Gate      Gate
+	// Gate admits the API's new payments, and Breaker the recovery's attempts.
+	Gate    Gate
+	Breaker Breaker
 	// NewID returns time-ordered ids, so that the newest payments sort first.
 	NewID func() string
 	Now   func() time.Time
@@ -86,7 +126,8 @@ type Deps struct {
 	Log    *slog.Logger
 }
 
-// Service runs the use cases of payments-api.
+// Service runs the use cases of payments-api, and the recovery of
+// payments-worker.
 type Service struct {
 	d Deps
 }
@@ -150,10 +191,13 @@ func (s *Service) Accept(ctx context.Context, m domain.Merchant, r domain.Paymen
 	// answer still finish, so the outcome is recorded instead of left for the
 	// recovery to find out.
 	ctx = context.WithoutCancel(ctx)
-	a := s.d.Acquirer.Authorize(ctx, AuthorizationRequest{
-		Key: p.ID, Token: p.CardToken, Amount: p.Amount, Currency: p.Currency, Reference: p.OrderID,
-	})
-	return s.record(ctx, p, a), false, nil
+	return s.record(ctx, p, s.d.Acquirer.Authorize(ctx, authorization(p))), false, nil
+}
+
+// authorization is the call to the acquirer for p, with p's id as the key on
+// every attempt.
+func authorization(p domain.Payment) AuthorizationRequest {
+	return AuthorizationRequest{Key: p.ID, Token: p.CardToken, Amount: p.Amount, Currency: p.Currency, Reference: p.OrderID}
 }
 
 // record applies the answer to p and stores it (T2). It returns the payment as
@@ -161,14 +205,8 @@ func (s *Service) Accept(ctx context.Context, m domain.Merchant, r domain.Paymen
 // and the recovery repeats the call with the same key once the lease expires,
 // so the answer is never lost, only delayed.
 func (s *Service) record(ctx context.Context, p domain.Payment, a domain.Answer) domain.Payment {
-	now := s.now()
-	next := p.WithAnswer(a, now, s.d.Random)
-	var final *events.PaymentEvent
-	if next.Status.Final() {
-		e := paymentEvent(eventType(next.Status), s.d.NewID(), next, now)
-		final = &e
-	}
-	err := s.d.Payments.RecordAnswer(ctx, next, a, final)
+	next := p.WithAnswer(a, s.now(), s.d.Random)
+	err := s.d.Payments.RecordAnswer(ctx, next, a, s.finalEvent(next))
 	switch {
 	case err == nil:
 		return next
@@ -183,6 +221,15 @@ func (s *Service) record(ctx context.Context, p domain.Payment, a domain.Answer)
 			"payment_id", p.ID, "outcome", a.Outcome, "error", err)
 	}
 	return p
+}
+
+// finalEvent is the event of p's final state, or nil while p is PROCESSING.
+func (s *Service) finalEvent(p domain.Payment) *events.PaymentEvent {
+	if !p.Status.Final() {
+		return nil
+	}
+	e := paymentEvent(eventType(p.Status), s.d.NewID(), p, p.UpdatedAt)
+	return &e
 }
 
 // now is the time in UTC, to the microsecond, as Postgres keeps it: the

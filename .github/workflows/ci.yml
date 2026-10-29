@@ -90,6 +90,44 @@ jobs:
           curl --fail --silent --show-error localhost:8090/v1/authorizations \
             -H 'Authorization: Bearer sk_sim_local_only' -H 'Idempotency-Key: ci-1' \
             -d "{\"token\":\"$token\",\"amount\":15000,\"currency\":\"CLP\"}" | jq -e '.status == "approved"'
+      # The recovery (RFC 0001, section 5.5), with the test cards of section 10.
+      - name: A temporary error is finished in the background
+        run: |
+          . tests/compose/payments.sh
+          test "$(pay ci-temporary 4000000000000127)" = 202
+          settle ci-temporary 15 | jq -e '.status == "APPROVED" and
+            [.history[] | select(.kind == "acquirer_call") | .outcome] == ["uncertain", "approved"]'
+      - name: The API dies during its call, and the recovery finishes the payment
+        run: |
+          . tests/compose/payments.sh
+          # The card answers after 8 s, so the API dies while it waits.
+          (pay ci-killed 4000000000000135 || true) &
+          sleep 2
+          docker compose kill payments-api
+          wait
+          docker compose up --detach --wait payments-api
+          p=$(settle ci-killed 40)
+          jq -e '.status == "APPROVED"' <<<"$p"
+          book "$(jq -r .id <<<"$p")" | jq -e 'length == 1 and .[0].live'
+      - name: With Kafka down, the recovery finishes a payment, and its event waits
+        run: |
+          . tests/compose/payments.sh
+          docker compose stop kafka
+          test "$(pay ci-kafka-down 4000000000000127)" = 202
+          id=$(settle ci-kafka-down 15 | jq -er 'select(.status == "APPROVED") | .id')
+          docker compose up --detach --wait kafka
+          # The four payments approved so far: ci-1 and the three above.
+          events=$(docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh \
+            --bootstrap-server localhost:9092 --topic payments.events.v1 --from-beginning \
+            --max-messages 4 --timeout-ms 60000)
+          grep -q "$id" <<<"$events"
+      - name: A payment that never gets an answer is reversed, and ends FAILED
+        run: |
+          . tests/compose/payments.sh
+          test "$(pay ci-never 4000000000000150)" = 202
+          p=$(settle ci-never 60)
+          jq -e '.status == "FAILED" and .reason == "acquirer_unavailable"' <<<"$p"
+          book "$(jq -r .id <<<"$p")" | jq -e 'length == 1 and .[0].reversed and (.[0].live | not)'
       - name: Show the logs
         if: failure()
         run: docker compose logs

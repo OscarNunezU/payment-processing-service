@@ -52,8 +52,9 @@ func loadSettings(env *config.Env) (settings, error) {
 		maxConns:    env.Int("DATABASE_MAX_CONNS", 20, 500),
 		acquirerURL: env.Required("ACQUIRER_URL"),
 		acquirerKey: env.Required("ACQUIRER_SECRET_KEY"),
-		// The time budget and the load shedding of RFC 0001, sections 5.4 and 5.6.
-		acquirerTimeout: env.Duration("ACQUIRER_TIMEOUT", domain.AcquirerTimeout),
+		// The time budget and the load shedding of RFC 0001, sections 5.4 and
+		// 5.6. A call must end before the payment's lease does.
+		acquirerTimeout: env.DurationUpTo("ACQUIRER_TIMEOUT", domain.AcquirerTimeout, domain.MaxAcquirerTimeout),
 		maxInFlight:     env.Int("MAX_PAYMENTS_IN_FLIGHT", 512, 100_000),
 		otlpEndpoint:    env.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		version:         env.String("SERVICE_VERSION", "dev"),
