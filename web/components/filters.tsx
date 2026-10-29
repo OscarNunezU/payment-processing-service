@@ -7,14 +7,14 @@ import styles from "./filters.module.css";
 
 // A GET form: the filters live in the URL, so a filtered list can be shared,
 // and it works before JavaScript loads. next/form navigates without a reload.
-export function Filters({ merchantId, status }: { merchantId: string; status: string }) {
-  const filtered = merchantId !== "" || status !== "";
+export function Filters({ orderId, status }: { orderId: string; status: string }) {
+  const filtered = orderId !== "" || status !== "";
 
   return (
     <Form action="/" className={`card ${styles.filters}`}>
       <label className={styles.field}>
-        Comercio
-        <input className="input" name="merchant_id" defaultValue={merchantId} placeholder="Todos" />
+        Orden
+        <input className="input" name="order_id" defaultValue={orderId} placeholder="Todas" />
       </label>
       <label className={styles.field}>
         Estado

@@ -36,6 +36,8 @@ export function formatTime(iso: string): string {
   return `${p.hour}:${p.minute}:${p.second}.${p.fractionalSecond}`;
 }
 
+// shortId keeps the last 8 characters: the ids are UUIDv7, whose first ones
+// are a timestamp, the same for every payment of the same minute.
 export function shortId(id: string): string {
-  return id.slice(0, 8);
+  return id.slice(-8);
 }

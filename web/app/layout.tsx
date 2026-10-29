@@ -5,13 +5,14 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { SiteNav } from "@/components/site-nav";
 import { type Theme, ThemeSwitcher } from "@/components/theme-switcher";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "Pagos", template: "%s · Payment Processing" },
-  description: "Consulta de los pagos del Payment Processing Service",
+  description: "El comercio de prueba del servicio de pagos: checkout, pagos, webhooks y el adquirente simulado",
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
@@ -26,13 +27,16 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     >
       <body>
         <header className="site-header">
-          <Link href="/" className="brand">
-            <span className="brand-logo" aria-hidden="true" />
-            Payment Processing
-          </Link>
+          <div className="header-start">
+            <Link href="/" className="brand">
+              <span className="brand-logo" aria-hidden="true" />
+              Payment Processing
+            </Link>
+            <SiteNav />
+          </div>
           <div className="header-actions">
             <ThemeSwitcher initial={theme} />
-            <Link href="/payments/new" className="button">
+            <Link href="/checkout" className="button">
               + Pago de prueba
             </Link>
           </div>

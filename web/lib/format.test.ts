@@ -14,6 +14,7 @@ test("times are shown in Chilean time, whatever the server's zone", () => {
   assert.equal(formatTime("2026-10-16T12:41:03.120Z"), "09:41:03.120");
 });
 
-test("shortId keeps the first 8 characters of the UUID", () => {
-  assert.equal(shortId("7f3a1c2e-0b9d-4c1e-9b41-5d2f8a6e3c10"), "7f3a1c2e");
+test("shortId keeps the random end of a UUIDv7, not its timestamp", () => {
+  assert.equal(shortId("01a188e5-22f9-7bb2-99b5-8e08aaa94bdd"), "aaa94bdd");
+  assert.notEqual(shortId("01a188e5-22f9-7bb2-99b5-8e08aaa94bdd"), shortId("01a188e5-265a-712d-a410-ff6cbf5b6b48"));
 });

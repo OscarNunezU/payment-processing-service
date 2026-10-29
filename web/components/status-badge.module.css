@@ -46,8 +46,3 @@
   background: var(--processing-bg);
   color: var(--processing);
 }
-
-.PENDING {
-  background: var(--pending-bg);
-  color: var(--pending);
-}

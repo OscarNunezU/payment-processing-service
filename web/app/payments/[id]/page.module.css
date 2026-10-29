@@ -57,12 +57,6 @@
   overflow-wrap: anywhere;
 }
 
-.live {
-  margin-top: 16px;
-  font-size: 12px;
-  color: var(--processing);
-}
-
 .historyTitle {
   font-size: 12px;
   font-weight: 600;
@@ -150,8 +144,12 @@
   background: var(--processing);
 }
 
-.PENDING {
+.call {
   background: var(--text-3);
+}
+
+.reversal {
+  background: var(--declined);
 }
 
 .time {

@@ -22,8 +22,6 @@
   --failed: #991b1b;
   --processing-bg: #dbeafe;
   --processing: #1e40af;
-  --pending-bg: #f4f4f5;
-  --pending: #3f3f46;
 
   --radius: 12px;
   --radius-sm: 8px;
@@ -55,8 +53,6 @@
     --failed: #f87171;
     --processing-bg: rgb(59 130 246 / 0.16);
     --processing: #60a5fa;
-    --pending-bg: rgb(161 161 170 / 0.14);
-    --pending: #d4d4d8;
     color-scheme: dark;
   }
 }
@@ -83,8 +79,6 @@
   --failed: #f87171;
   --processing-bg: rgb(59 130 246 / 0.16);
   --processing: #60a5fa;
-  --pending-bg: rgb(161 161 170 / 0.14);
-  --pending: #d4d4d8;
   color-scheme: dark;
 }
 
@@ -159,6 +153,13 @@ a {
   height: 22px;
   border-radius: 6px;
   background: var(--accent);
+}
+
+.header-start {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
 }
 
 .header-actions {
