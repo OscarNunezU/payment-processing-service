@@ -128,6 +128,20 @@ jobs:
           p=$(settle ci-never 60)
           jq -e '.status == "FAILED" and .reason == "acquirer_unavailable"' <<<"$p"
           book "$(jq -r .id <<<"$p")" | jq -e 'length == 1 and .[0].reversed and (.[0].live | not)'
+      # The webhooks (RFC 0001, section 9). The web app that receives them
+      # arrives in step 8: until then the attempts fail, and are retried.
+      - name: Every final payment becomes a webhook delivery
+        run: |
+          sql() { docker compose exec -T postgres psql -U "$1" -d "$1" -tAc "$2"; }
+          final=$(sql payments "SELECT count(*) FROM payments WHERE status <> 'PROCESSING'")
+          for _ in $(seq 30); do
+            tried=$(sql webhooks "SELECT count(*) FROM deliveries WHERE attempts > 0")
+            [ "$tried" = "$final" ] && break
+            sleep 1
+          done
+          echo "$final final payments, $tried deliveries tried"
+          test "$tried" = "$final"
+          test "$(sql webhooks "SELECT count(DISTINCT event_id) FROM deliveries")" = "$final"
       - name: Show the logs
         if: failure()
         run: docker compose logs
