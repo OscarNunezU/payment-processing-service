@@ -86,7 +86,7 @@ sequenceDiagram
    - If the key already exists, the request is a retry and gets its payment (section 6). A retry never goes through the gate below, so a merchant that lost a response always gets the payment back.
    - If the order already has a live payment, the unique index on orders rejects the insert, and the answer is `409 order_has_active_payment`.
 3. **The gate.** For a new payment, still inside T1, it checks the circuit breaker and the payments the instance has in flight (section 5.4). Both live in memory, so the check costs no round trip. If the breaker is open or the instance is at its limit, T1 rolls back and the answer is `503` with `Retry-After`: nothing is created, and the key stays free. Otherwise, T1 writes the first history row, records attempt 1 before the call, and commits.
-4. **The call.** It calls the acquirer with the payment id as the idempotency key and a 5 s timeout. No database connection is held while waiting.
+4. **The call.** It calls the acquirer with the payment id as the idempotency key and a 5 s timeout. No database connection is held while waiting. The call and T2 do not depend on the merchant's connection: if the merchant hangs up, the answer is still recorded, and its retry gets it.
 5. **T2.** It records the answer (section 5.2) and responds:
    - `201` with `APPROVED`, `DECLINED`, or `FAILED` with reason `acquirer_rejected`;
    - `202` with `PROCESSING` when the answer was not clear: the recovery continues, and the merchant learns the result by webhook or with `GET`.
