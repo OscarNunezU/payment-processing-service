@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,5 +179,45 @@ func TestReversalsDoNotCountForTheBreaker(t *testing.T) {
 	}
 	if b.Open() {
 		t.Error("5 failed reversals opened the breaker")
+	}
+}
+
+// The bug the consistency checker found under faults: the acquirer approves a
+// call on a kept-alive connection, and then goes down before answering. Go's
+// transport replays a request that carries an Idempotency-Key on a new
+// connection, which is refused. The refusal is the error the client sees,
+// but the request was sent, and approved: it must be uncertain, never not
+// sent, or the payment would fail without its reversal.
+func TestARequestSentBeforeARefusedRetryIsUncertain(t *testing.T) {
+	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"status":"approved","authorization_code":"7T4N4V","card":{"brand":"visa","last4":"1111"}}`))
+			return
+		}
+		// The second call reaches the acquirer, which goes down before it
+		// answers: the port closes, and so does the connection.
+		ln.Close()
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			conn.Close()
+		}
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	c := NewClient("http://"+ln.Addr().String(), "sk_sim", 2*time.Second, newBreaker())
+	if a := c.Authorize(t.Context(), request); a.Outcome != domain.OutcomeApproved {
+		t.Fatalf("the first call: got %+v", a)
+	}
+	a := c.Authorize(t.Context(), request)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("the acquirer got %d calls, want 2", n)
+	}
+	if a.Outcome != domain.OutcomeUncertain {
+		t.Errorf("got %s %q, want uncertain: the request reached the acquirer before the refusal", a.Outcome, a.ResponseCode)
 	}
 }

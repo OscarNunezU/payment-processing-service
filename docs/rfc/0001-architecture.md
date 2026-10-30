@@ -108,9 +108,10 @@ Each answer from the acquirer falls into one class:
 |---|---|---|
 | Approved or declined | Definite | The final state |
 | `4xx` other than `408` and `429` | Rejected | `FAILED`, reason `acquirer_rejected` |
-| Connection refused | Not sent | Another attempt |
+| Connection refused, for a request that never had a connection | Not sent | Another attempt |
 | Timeout, connection reset after sending, `5xx`, `408`, `429`, or an unreadable or incomplete answer | Uncertain | Another attempt |
 
+- Go's HTTP transport replays a request that carries an `Idempotency-Key` on a new connection when a kept-alive one fails, and returns the error of the replay. A refused replay says nothing about the first try, which may have reached the acquirer, so the client classifies a refusal as not sent only when the request never had a connection. The consistency checker found this under faults (README, "Proof").
 - A payment gets up to 3 attempts without a definite answer: the first in the request, and the others in the recovery. The wait before each new attempt doubles from a 2 s base, with half of it random: 1–2 s, then 2–4 s.
 - Repeating an uncertain attempt is safe, and it is also the inquiry: the acquirer returns the answer it stored for the key, or processes the request for the first time.
 - **The authorization window.** No new authorization is sent more than 2 minutes after the payment was created, so a customer who has left the checkout is never charged late. A payment that reaches the window without a definite answer is handled as if its attempts had run out.

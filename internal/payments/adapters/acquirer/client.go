@@ -11,8 +11,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -143,6 +145,15 @@ func (c *Client) reverse(ctx context.Context, key string) domain.Answer {
 func (c *Client) post(ctx context.Context, path, idempotencyKey string, body []byte) (int, []byte, *domain.Answer) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	// Go's transport replays a request that carries an Idempotency-Key on a
+	// new connection when a kept-alive one fails, and returns the error of
+	// the replay. A refused replay says nothing about the first try, which
+	// may have reached the acquirer: only a request that never had a
+	// connection was certainly not sent.
+	var connected atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, &domain.Answer{Outcome: domain.OutcomeNotSent, ResponseCode: "invalid_request"}
@@ -157,7 +168,7 @@ func (c *Client) post(ctx context.Context, path, idempotencyKey string, body []b
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		failure := failedCall(err)
+		failure := failedCall(err, connected.Load())
 		return 0, nil, &failure
 	}
 	defer resp.Body.Close()
@@ -169,12 +180,12 @@ func (c *Client) post(ctx context.Context, path, idempotencyKey string, body []b
 	return resp.StatusCode, raw, nil
 }
 
-// failedCall classifies a call that got no answer. Only a refused connection
-// proves the request never arrived; anything else may have reached the
-// acquirer.
-func failedCall(err error) domain.Answer {
+// failedCall classifies a call that got no answer. Only a refused connection,
+// for a request that never had one, proves the request never arrived;
+// anything else may have reached the acquirer.
+func failedCall(err error, connected bool) domain.Answer {
 	switch {
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case errors.Is(err, syscall.ECONNREFUSED) && !connected:
 		return domain.Answer{Outcome: domain.OutcomeNotSent, ResponseCode: "connection_refused"}
 	case errors.Is(err, context.DeadlineExceeded):
 		return domain.Answer{Outcome: domain.OutcomeUncertain, ResponseCode: "timeout"}
