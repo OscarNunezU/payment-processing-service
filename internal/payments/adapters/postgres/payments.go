@@ -62,11 +62,20 @@ func scanPayment(row pgx.Row, extra ...any) (domain.Payment, error) {
 func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func() error) (domain.Payment, bool, error) {
 	created := false
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// The payment and its first two history rows in one statement: the
+		// history is written only if the payment was.
 		tag, err := tx.Exec(ctx, `
-			INSERT INTO payments (id, merchant_id, order_id, idempotency_key, request_hash, amount, currency,
-			                      card_token, status, attempts, epoch, lease_until, created_at, updated_at, traceparent)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, nullif($14, ''))
-			ON CONFLICT (merchant_id, idempotency_key) DO NOTHING`,
+			WITH inserted AS (
+				INSERT INTO payments (id, merchant_id, order_id, idempotency_key, request_hash, amount, currency,
+				                      card_token, status, attempts, epoch, lease_until, created_at, updated_at, traceparent)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, nullif($14, ''))
+				ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+				RETURNING id
+			)
+			INSERT INTO payment_history (payment_id, kind, status, attempt, created_at)
+			SELECT id, 'status', $9, NULL, $13 FROM inserted
+			UNION ALL
+			SELECT id, 'acquirer_call', NULL, $10, $13 FROM inserted`,
 			p.ID, p.MerchantID, p.OrderID, p.IdempotencyKey, p.RequestHash[:], p.Amount, p.Currency,
 			p.CardToken, p.Status, p.Attempts, p.Epoch, p.LeaseUntil, p.CreatedAt, telemetry.TraceParent(ctx),
 		)
@@ -83,13 +92,6 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func(
 			return err // rolls the insert back: the payment never existed
 		}
 		created = true
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO payment_history (payment_id, kind, status, attempt, created_at)
-			VALUES ($1, 'status', $2, NULL, $4), ($1, 'acquirer_call', NULL, $3, $4)`,
-			p.ID, p.Status, p.Attempts, p.CreatedAt,
-		); err != nil {
-			return fmt.Errorf("record the first attempt of payment %s: %w", p.ID, err)
-		}
 		return nil
 	})
 	if err != nil {
@@ -114,23 +116,22 @@ func (s *Store) InsertPayment(ctx context.Context, p domain.Payment, admit func(
 // payment still PROCESSING with p's epoch, so a writer that was taken over
 // changes nothing.
 func (s *Store) RecordAnswer(ctx context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
-	return s.record(ctx, p, final, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
+	return s.record(ctx, p, final, func(b *pgx.Batch) {
+		b.Queue(`
 			UPDATE payment_history SET outcome = $3, latency_ms = $4, response_code = nullif($5, '')
 			WHERE payment_id = $1 AND kind = 'acquirer_call' AND attempt = $2`,
 			p.ID, p.Attempts, a.Outcome, a.Latency.Milliseconds(), a.ResponseCode,
-		); err != nil {
-			return fmt.Errorf("record attempt %d of payment %s: %w", p.Attempts, p.ID, err)
-		}
-		return nil
+		)
 	})
 }
 
 // record stores p's new state, conditional on the stored payment being still
 // PROCESSING with p's epoch, in one transaction with the answer of its call,
 // when call is not nil, and with the final status and its event in the
-// outbox, when final is not nil.
-func (s *Store) record(ctx context.Context, p domain.Payment, final *events.PaymentEvent, call func(pgx.Tx) error) error {
+// outbox, when final is not nil. The statements go to Postgres in one batch,
+// a single round trip: when the update finds another epoch, the transaction
+// rolls back, and the statements after it with it.
+func (s *Store) record(ctx context.Context, p domain.Payment, final *events.PaymentEvent, call func(*pgx.Batch)) error {
 	var payload []byte
 	if final != nil {
 		var err error
@@ -142,43 +143,49 @@ func (s *Store) record(ctx context.Context, p domain.Payment, final *events.Paym
 	if !p.Status.Final() {
 		lease = &p.LeaseUntil
 	}
-	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			UPDATE payments
-			SET status = $3, reason = nullif($4, ''), authorization_code = nullif($5, ''),
-			    decline_code = nullif($6, ''), card_brand = nullif($7, ''), card_last4 = nullif($8, ''),
-			    lease_until = $9, updated_at = $10
-			WHERE id = $1 AND epoch = $2 AND status = 'PROCESSING'`,
-			p.ID, p.Epoch, p.Status, p.Reason, p.AuthorizationCode, p.DeclineCode, p.CardBrand, p.CardLast4,
-			lease, p.UpdatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("record the state of payment %s: %w", p.ID, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return app.ErrStaleEpoch
-		}
-		if call != nil {
-			if err := call(tx); err != nil {
-				return err
-			}
-		}
-		if final == nil {
-			return nil
-		}
-		if _, err := tx.Exec(ctx, `
+	b := &pgx.Batch{}
+	b.Queue(`
+		UPDATE payments
+		SET status = $3, reason = nullif($4, ''), authorization_code = nullif($5, ''),
+		    decline_code = nullif($6, ''), card_brand = nullif($7, ''), card_last4 = nullif($8, ''),
+		    lease_until = $9, updated_at = $10
+		WHERE id = $1 AND epoch = $2 AND status = 'PROCESSING'`,
+		p.ID, p.Epoch, p.Status, p.Reason, p.AuthorizationCode, p.DeclineCode, p.CardBrand, p.CardLast4,
+		lease, p.UpdatedAt,
+	)
+	if call != nil {
+		call(b)
+	}
+	if final != nil {
+		b.Queue(`
 			INSERT INTO payment_history (payment_id, kind, status, reason, created_at)
 			VALUES ($1, 'status', $2, nullif($3, ''), $4)`,
 			p.ID, p.Status, p.Reason, p.UpdatedAt,
-		); err != nil {
-			return fmt.Errorf("record the final state of payment %s: %w", p.ID, err)
-		}
-		return outbox.Write(ctx, tx, outbox.Message{
+		)
+		if err := outbox.Queue(ctx, b, outbox.Message{
 			Topic:   events.PaymentsTopic,
 			Key:     p.ID,
 			Payload: payload,
 			Headers: map[string]string{events.HeaderEventID: final.ID, events.HeaderEventType: string(final.Type)},
-		})
+		}); err != nil {
+			return err
+		}
+	}
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		results := tx.SendBatch(ctx, b)
+		tag, err := results.Exec()
+		if err != nil {
+			_ = results.Close()
+			return fmt.Errorf("record the state of payment %s: %w", p.ID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			_ = results.Close()
+			return app.ErrStaleEpoch
+		}
+		if err := results.Close(); err != nil {
+			return fmt.Errorf("record the answer and the history of payment %s: %w", p.ID, err)
+		}
+		return nil
 	})
 	if err == nil && final != nil {
 		countFinished(ctx, p)
