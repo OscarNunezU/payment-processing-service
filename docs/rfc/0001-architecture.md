@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), the recovery, the webhooks and the web app as built in steps 6 to 8, and the observability of step 9 ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)) · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), the recovery, the webhooks and the web app as built in steps 6 to 8, the observability of step 9 ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)), and what its proof changed: refusals after a reused connection, and the recovery's breaker · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 
@@ -108,9 +108,10 @@ Each answer from the acquirer falls into one class:
 |---|---|---|
 | Approved or declined | Definite | The final state |
 | `4xx` other than `408` and `429` | Rejected | `FAILED`, reason `acquirer_rejected` |
-| Connection refused | Not sent | Another attempt |
+| Connection refused, for a request that never had a connection | Not sent | Another attempt |
 | Timeout, connection reset after sending, `5xx`, `408`, `429`, or an unreadable or incomplete answer | Uncertain | Another attempt |
 
+- Go's HTTP transport replays a request that carries an `Idempotency-Key` on a new connection when a kept-alive one fails, and returns the error of the replay. A refused replay says nothing about the first try, which may have reached the acquirer, so the client classifies a refusal as not sent only when the request never had a connection. The consistency checker found this under faults (README, "Proof").
 - A payment gets up to 3 attempts without a definite answer: the first in the request, and the others in the recovery. The wait before each new attempt doubles from a 2 s base, with half of it random: 1–2 s, then 2–4 s.
 - Repeating an uncertain attempt is safe, and it is also the inquiry: the acquirer returns the answer it stored for the key, or processes the request for the first time.
 - **The authorization window.** No new authorization is sent more than 2 minutes after the payment was created, so a customer who has left the checkout is never charged late. A payment that reaches the window without a definite answer is handled as if its attempts had run out.
@@ -123,10 +124,11 @@ Each answer from the acquirer falls into one class:
 ### 5.4 Circuit breaker and load shedding
 
 - **Circuit breaker.** Each instance of `payments-api` and `payments-worker` has one.
-  - After 5 consecutive answers that are uncertain or not sent, from any payments, it opens for 30 s.
+  - In `payments-api`, it opens for 30 s after 5 answers in a row that are uncertain or not sent, from any payments.
+  - In `payments-worker`, it opens for 30 s after 5 refused connections in a row. The recovery only calls for payments whose last attempt had no definite answer, so its timeouts and errors are often about the payment, not the acquirer. Under load, a card the acquirer never answers kept a breaker that counted them open, and held the attempts of every other payment until their authorization windows ended (README, "Proof"). A refused connection is about the acquirer. The cost: when the acquirer accepts connections but answers nothing, the recovery spends its attempts and reverses, instead of holding them.
   - While it is open, `payments-api` answers new payments with `503` and `Retry-After` without creating them, and the recovery holds its attempts: a held payment keeps the lease of its claim, and is claimed again when it ends. The authorization window keeps running.
   - Until it opens, an outage is discovered by the calls themselves: the few payments created before the breaker opens answer `202`, and the recovery finishes them. No call can tell that the acquirer is down before trying.
-  - After the cool-down, a single call probes the acquirer: a definite answer closes the breaker, and a failure opens it again. Any definite answer resets the count.
+  - After the cool-down, a single call probes the acquirer: an answer that is not a failure closes the breaker, and a failure opens it again. Any such answer resets the count.
   - Reversals neither wait for the breaker nor count for it: they are what keeps a failed payment from being charged, and they are few, with their own waits.
 - **Load shedding.** Each instance of `payments-api` has at most 512 payments in flight at the acquirer. Beyond that, it answers new payments with `503` and `Retry-After`, so a slow acquirer cannot pile up requests without limit. Like the breaker, the limit is checked inside T1, after the key, so retries of existing payments are always answered.
 
@@ -153,7 +155,7 @@ Every minute, it also logs an alert for any payment in `PROCESSING` for more tha
 | Wait before a new attempt | 1–2 s, then 2–4 s |
 | Authorization window | 2 minutes from creation |
 | Reversal retries | from 5 s, doubling up to 1 minute |
-| Circuit breaker | opens after 5 failures, for 30 s |
+| Circuit breaker | opens after 5 failures in a row, for 30 s; the recovery's counts refused connections only |
 | Payments in flight per API instance | 512 |
 | Alert for an unresolved payment | 5 minutes, checked every minute |
 | Webhook POST timeout, and the lease of a claimed delivery | 5 s and 30 s |

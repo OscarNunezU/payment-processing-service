@@ -1,0 +1,44 @@
+ Container payments-platform-k6-run-816cd1d3d04c Creating 
+ Container payments-platform-k6-run-816cd1d3d04c Created 
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{name:pay}
+    ✓ 'p(99)<60000' p(99)=304.73ms
+
+    http_req_duration{name:tokenize}
+    ✓ 'p(99)<60000' p(99)=387.83µs
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 18000   298.508231/s
+    checks_succeeded...: 100.00% 18000 out of 18000
+    checks_failed......: 0.00%   0 out of 18000
+
+    ✓ answered 201, 202 or 503
+
+    CUSTOM
+    payment_answers................: 18000 298.508231/s
+
+    HTTP
+    http_req_duration..............: avg=150.98ms p(50)=153.12ms p(95)=302.48ms p(99)=303.43ms max=334.6ms
+      { expected_response:true }...: avg=150.98ms p(50)=153.12ms p(95)=302.48ms p(99)=303.43ms max=334.6ms
+      { name:pay }.................: avg=301.84ms p(50)=301.66ms p(95)=302.82ms p(99)=304.73ms max=334.6ms
+      { name:tokenize }............: avg=133.1µs  p(50)=109.79µs p(95)=261.2µs  p(99)=387.83µs max=5.38ms 
+    http_req_failed................: 0.00% 0 out of 36000
+    http_reqs......................: 36000 597.016463/s
+
+    EXECUTION
+    iteration_duration.............: avg=302.06ms p(50)=301.86ms p(95)=303.23ms p(99)=305.47ms max=334.9ms
+    iterations.....................: 18000 298.508231/s
+    vus............................: 90    min=90         max=96 
+    vus_max........................: 300   min=300        max=300
+
+    NETWORK
+    data_received..................: 15 MB 243 kB/s
+    data_sent......................: 11 MB 176 kB/s
+
+
+

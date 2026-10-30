@@ -34,7 +34,7 @@ func New(timeout time.Duration) *Sender {
 			// default otelhttp takes the provider of the span in the
 			// request's context, and the span resumed from a delivery's
 			// trace is a remote one, whose provider records nothing.
-			Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithTracerProvider(otel.GetTracerProvider())),
+			Transport: otelhttp.NewTransport(keepAlive(), otelhttp.WithTracerProvider(otel.GetTracerProvider())),
 			// A redirect is not an answer: it counts as a failed attempt, and
 			// the webhook never goes to an address the merchant did not set.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -42,6 +42,16 @@ func New(timeout time.Duration) *Sender {
 		timeout: timeout,
 		now:     time.Now,
 	}
+}
+
+// keepAlive returns a transport that keeps the connections to the endpoints
+// open between deliveries: Go's default keeps 2 per host, and a dispatcher
+// posts up to 100 webhooks at once.
+func keepAlive() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxIdleConnsPerHost = 100
+	return t
 }
 
 // Send posts r. The POST joins the trace of the payment, so the trace runs

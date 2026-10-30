@@ -25,3 +25,6 @@ test-results/
 .DS_Store
 .idea/
 .vscode/
+
+# Load test runs: the README keeps the results it reports in docs/proof
+tests/load/results/

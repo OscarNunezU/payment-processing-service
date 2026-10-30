@@ -92,3 +92,39 @@ func TestAProbeThatNeverAnsweredGivesWay(t *testing.T) {
 		t.Error("the stuck probe never gave way")
 	}
 }
+
+func newTestRecoveryBreaker() *Breaker {
+	c := &clock{now: time.Date(2026, 10, 29, 13, 0, 0, 0, time.UTC)}
+	return NewRecoveryBreaker(5, 30*time.Second, c.Now)
+}
+
+func refuse(b *Breaker, n int) {
+	for range n {
+		b.Record(domain.OutcomeNotSent)
+	}
+}
+
+// The recovery only calls for payments that had no definite answer, so a card
+// the acquirer never answers can time out again and again while the acquirer
+// answers every other payment.
+func TestTheRecoveryBreakerDoesNotOpenOnUncertainAnswers(t *testing.T) {
+	b := newTestRecoveryBreaker()
+	fail(b, 20)
+	if !b.Allow() || b.Open() {
+		t.Error("uncertain answers opened the recovery's breaker")
+	}
+	refuse(b, 5)
+	if b.Allow() || !b.Open() {
+		t.Error("5 refused connections did not open the recovery's breaker")
+	}
+}
+
+func TestAnUncertainAnswerResetsTheRecoveryBreaker(t *testing.T) {
+	b := newTestRecoveryBreaker()
+	refuse(b, 4)
+	b.Record(domain.OutcomeUncertain)
+	refuse(b, 4)
+	if !b.Allow() {
+		t.Error("a call that reached the acquirer did not reset the count")
+	}
+}

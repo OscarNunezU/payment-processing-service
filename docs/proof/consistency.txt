@@ -1,0 +1,11 @@
+79256 payments (76870 APPROVED, 1173 DECLINED, 1213 FAILED), 78669 keys in the acquirer's book, 79256 webhook events. Settled after 27s.
+
+Invariant  Rule                                      Checked  Violations
+INV01      one key, one payment                      79256    0
+INV02      one live or approved payment per order    79256    0
+INV03      money is held only for approved payments  156126   0
+INV04      every payment reaches a final state       79256    0
+INV05      webhooks match the database and the book  79256    0
+INV06      every final state is delivered once       79256    0
+
+All invariants hold.

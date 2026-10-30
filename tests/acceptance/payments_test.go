@@ -157,7 +157,7 @@ func (s *service) serveAPI(t *testing.T, payments app.Payments) string {
 // own, scanning every 20 ms, until the test ends.
 func (s *service) runRecovery(t *testing.T) {
 	t.Helper()
-	breaker := acquirer.NewBreaker(5, breakerCooldown, time.Now)
+	breaker := acquirer.NewRecoveryBreaker(5, breakerCooldown, time.Now)
 	svc := app.NewService(app.Deps{
 		Payments:    s.store,
 		Acquirer:    acquirer.NewClient("http://"+s.public.Addr(), simSecret, clientTimeout, breaker),

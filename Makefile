@@ -8,7 +8,7 @@ BIN           := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
 GOVULNCHECK   := $(BIN)/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck
 
-.PHONY: help fmt lint test test-integration vulncheck web ci up down logs
+.PHONY: help fmt lint test test-integration vulncheck web ci up down logs proof
 
 help: ## Show the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -50,3 +50,6 @@ $(GOLANGCI_LINT):
 
 $(GOVULNCHECK):
 	GOBIN=$(dir $@) GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+proof: ## Load test with faults, then the consistency checker (step 9), on a running environment
+	tests/load/run.sh

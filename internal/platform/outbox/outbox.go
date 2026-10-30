@@ -29,22 +29,41 @@ type Message struct {
 // describes. It adds the trace context of ctx to the headers, so the trace
 // continues on the consumer's side.
 func Write(ctx context.Context, tx pgx.Tx, m Message) error {
+	args, err := insertArgs(ctx, m)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, insert, args...); err != nil {
+		return fmt.Errorf("write a %s message to the outbox: %w", m.Topic, err)
+	}
+	return nil
+}
+
+// Queue adds the insert of m to b, which must be sent within the transaction
+// of the change m describes. Batching the statements of a transaction sends
+// them in one round trip.
+func Queue(ctx context.Context, b *pgx.Batch, m Message) error {
+	args, err := insertArgs(ctx, m)
+	if err != nil {
+		return err
+	}
+	b.Queue(insert, args...)
+	return nil
+}
+
+const insert = `INSERT INTO outbox (topic, key, payload, headers) VALUES ($1, $2, $3, $4)`
+
+// insertArgs checks m, and adds the trace context of ctx to its headers.
+func insertArgs(ctx context.Context, m Message) ([]any, error) {
 	if m.Topic == "" || m.Key == "" {
-		return errors.New("an outbox message needs a topic and a key")
+		return nil, errors.New("an outbox message needs a topic and a key")
 	}
 	headers := make(map[string]string, len(m.Headers)+2)
 	maps.Copy(headers, m.Headers)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(headers))
 	encoded, err := json.Marshal(headers)
 	if err != nil {
-		return fmt.Errorf("encode the headers of a %s message: %w", m.Topic, err)
+		return nil, fmt.Errorf("encode the headers of a %s message: %w", m.Topic, err)
 	}
-
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO outbox (topic, key, payload, headers) VALUES ($1, $2, $3, $4)`,
-		m.Topic, m.Key, m.Payload, encoded,
-	); err != nil {
-		return fmt.Errorf("write a %s message to the outbox: %w", m.Topic, err)
-	}
-	return nil
+	return []any{m.Topic, m.Key, m.Payload, encoded}, nil
 }

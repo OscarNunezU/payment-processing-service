@@ -126,9 +126,9 @@ func run(ctx context.Context, env *config.Env) error {
 	}
 	defer kafka.Close()
 
-	// The recovery has a breaker of its own, which opens on the failures of
-	// its attempts (RFC 0001, section 5.4).
-	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
+	// The recovery has a breaker of its own, which opens on refused
+	// connections only (RFC 0001, section 5.4).
+	breaker := acquirer.NewRecoveryBreaker(5, 30*time.Second, time.Now)
 	store := postgres.New(db)
 	// What the worker watches over: its breaker, the payments it may have to
 	// recover, and the events waiting for Kafka.
@@ -136,6 +136,7 @@ func run(ctx context.Context, env *config.Env) error {
 		acquirer.ObserveBreaker(breaker),
 		postgres.ObserveRecovery(store, time.Now),
 		outbox.ObservePending(db),
+		platformpg.ObservePool(db),
 	); err != nil {
 		return fmt.Errorf("observe the worker: %w", err)
 	}

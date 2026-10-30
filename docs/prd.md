@@ -279,7 +279,7 @@ Feature: Merchants
 - Unit tests of the domain: the state machine, the classification of the acquirer's answers and the backoff.
 - Integration tests against real Postgres and Kafka, with testcontainers.
 - The acceptance scenarios above, as end-to-end tests against the full local environment, using the fault controls of the acquirer simulator.
-- A consistency checker. After a load test with faults, it compares every payment in the database with the acquirer simulator's book and with the webhooks received, and checks INV02 to INV06.
+- A consistency checker. After a load test with faults, it compares every payment in the database with the acquirer simulator's book and with the webhooks received, and checks INV01 to INV06.
 - A load test with k6 for NFR01 and NFR02. The README reports what was measured, and on which machine.
 - A Grafana dashboard that shows the service during the load test and its faults: latency, outcomes, the breaker, the recovery, the outbox and the webhooks.
 

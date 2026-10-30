@@ -103,15 +103,12 @@ func (s *Store) StartReversal(ctx context.Context, p domain.Payment, at time.Tim
 // RecordReversal records the answer to the payment's last reversal, the one
 // its epoch sent.
 func (s *Store) RecordReversal(ctx context.Context, p domain.Payment, a domain.Answer, final *events.PaymentEvent) error {
-	return s.record(ctx, p, final, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
+	return s.record(ctx, p, final, func(b *pgx.Batch) {
+		b.Queue(`
 			UPDATE payment_history SET outcome = $2, latency_ms = $3, response_code = nullif($4, '')
 			WHERE id = (SELECT max(id) FROM payment_history WHERE payment_id = $1 AND kind = 'reversal')`,
 			p.ID, a.Outcome, a.Latency.Milliseconds(), a.ResponseCode,
-		); err != nil {
-			return fmt.Errorf("record a reversal of payment %s: %w", p.ID, err)
-		}
-		return nil
+		)
 	})
 }
 
