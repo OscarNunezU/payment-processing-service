@@ -40,10 +40,21 @@ func NewClient(baseURL, secretKey string, timeout time.Duration, breaker *Breake
 		baseURL: baseURL,
 		key:     secretKey,
 		timeout: timeout,
-		http:    &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)},
+		http:    &http.Client{Transport: otelhttp.NewTransport(keepAlive(512))},
 		breaker: breaker,
 		now:     time.Now,
 	}
+}
+
+// keepAlive returns a transport that keeps up to idle connections to each
+// host. Go's default keeps 2, so with many payments in flight most calls would
+// open a connection of their own. 512 is the API's limit of payments in
+// flight (RFC 0001, section 5.4).
+func keepAlive(idle int) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = idle
+	t.MaxIdleConnsPerHost = idle
+	return t
 }
 
 type authorizeBody struct {

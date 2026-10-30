@@ -29,8 +29,9 @@ type Relay struct {
 	db    *pgxpool.Pool
 	kafka Producer
 	log   *slog.Logger
-	// Batch is how many rows a round reads; Idle is the wait when the outbox
-	// is empty, and Retry the wait after losing the lock or failing.
+	// Batch is how many rows a round reads; Idle is the wait after a round
+	// that did not fill its batch, and Retry the wait after losing the lock
+	// or failing.
 	Batch int
 	Idle  time.Duration
 	Retry time.Duration
@@ -80,7 +81,10 @@ func (r *Relay) lead(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if n == 0 && !sleep(ctx, r.Idle) {
+		// A full batch means more are waiting, so the next one goes at once.
+		// Otherwise the relay waits, and the events of the next moment travel
+		// together, instead of one request to Kafka and one query each.
+		if n < r.Batch && !sleep(ctx, r.Idle) {
 			return nil
 		}
 	}
