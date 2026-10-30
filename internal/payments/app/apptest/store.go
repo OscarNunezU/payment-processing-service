@@ -307,6 +307,20 @@ func (s *Store) find(match func(domain.Payment) bool) (domain.Payment, error) {
 	return domain.Payment{}, app.ErrNotFound
 }
 
+func (s *Store) PaymentWithHistory(_ context.Context, merchantID, id string) (domain.Payment, []domain.HistoryEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Err != nil {
+		return domain.Payment{}, nil, s.Err
+	}
+	for _, p := range s.payments {
+		if p.MerchantID == merchantID && p.ID == id {
+			return p, slices.Clone(s.history[id]), nil
+		}
+	}
+	return domain.Payment{}, nil, app.ErrNotFound
+}
+
 func (s *Store) History(_ context.Context, paymentID string) ([]domain.HistoryEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

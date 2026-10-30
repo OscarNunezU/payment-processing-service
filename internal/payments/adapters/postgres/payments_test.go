@@ -1,15 +1,19 @@
 package postgres_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"uuid"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 
@@ -270,9 +274,63 @@ func TestAPaymentIsOnlyFoundByItsMerchant(t *testing.T) {
 	if _, err := store.PaymentByKey(t.Context(), otherMerchantID, "k1"); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("by key: got %v, want ErrNotFound", err)
 	}
+	if _, _, err := store.PaymentWithHistory(t.Context(), otherMerchantID, p.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("with its history: got %v, want ErrNotFound", err)
+	}
 	list, err := store.ListPayments(t.Context(), app.ListFilter{MerchantID: otherMerchantID, Limit: 10})
 	if err != nil || len(list) != 0 {
 		t.Errorf("list: got %d payments, %v, want none", len(list), err)
+	}
+}
+
+// stepBetweenReads commits a step of a payment's history from another
+// connection right after a read of that payment, as the recovery could.
+type stepBetweenReads struct {
+	pool      *pgxpool.Pool
+	paymentID string
+	done      atomic.Bool
+	err       error
+}
+
+type querySQL struct{}
+
+func (s *stepBetweenReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, querySQL{}, data.SQL)
+}
+
+func (s *stepBetweenReads) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	query, _ := ctx.Value(querySQL{}).(string)
+	if !strings.Contains(query, "FROM payments WHERE merchant_id = $1 AND id = $2") || s.done.Swap(true) {
+		return
+	}
+	_, s.err = s.pool.Exec(context.Background(), `
+		INSERT INTO payment_history (payment_id, kind, status, created_at) VALUES ($1, 'status', 'PROCESSING', now())`,
+		s.paymentID)
+}
+
+func TestAPaymentAndItsHistoryAreReadAtOnePointInTime(t *testing.T) {
+	store, pool := paymentsSetup(t)
+	p := newPayment(merchant().ID, "k1", "o1")
+	insert(t, store, p)
+
+	step := &stepBetweenReads{pool: pool, paymentID: p.ID}
+	cfg := pool.Config()
+	cfg.ConnConfig.Tracer = step
+	traced, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(traced.Close)
+
+	_, history, err := postgres.New(traced).PaymentWithHistory(t.Context(), p.MerchantID, p.ID)
+	if err != nil || !step.done.Load() || step.err != nil {
+		t.Fatalf("read: %v; the step between the reads: committed %v, %v", err, step.done.Load(), step.err)
+	}
+	if len(history) != 2 {
+		t.Errorf("got %d history entries, want the 2 of the payment as it was read", len(history))
+	}
+	if all, _ := store.History(t.Context(), p.ID); len(all) != 3 {
+		t.Errorf("the step between the reads left %d entries, want 3", len(all))
 	}
 }
 
