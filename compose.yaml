@@ -108,7 +108,7 @@ services:
       retries: 20
 
   grafana:
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.3.0
     environment:
       # Local development only: no login, and the dashboards are files.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
