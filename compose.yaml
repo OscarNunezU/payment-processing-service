@@ -322,7 +322,7 @@ services:
   # The load test of step 9 (tests/load/run.sh). A profile keeps it out of
   # `docker compose up`.
   k6:
-    image: grafana/k6:2.2.0
+    image: grafana/k6:2.3.0
     profiles: ["load"]
     volumes:
       - ./tests/load:/scripts:ro
