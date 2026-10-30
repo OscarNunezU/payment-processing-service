@@ -39,3 +39,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Tempo 3 replaced the ingester and the compactor, so its configuration
+      # has to be rewritten: a migration of its own, not a version bump.
+      - dependency-name: grafana/tempo
+        update-types: ["version-update:semver-major"]
