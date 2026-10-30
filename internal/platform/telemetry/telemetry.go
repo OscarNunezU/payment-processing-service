@@ -24,11 +24,14 @@ import (
 // dashboard to follow a load test.
 const MetricsInterval = 10 * time.Second
 
-// durations gives the HTTP durations fine buckets around the acquirer's 5 s
-// timeout, so a percentile tells a call cut at the timeout from one that took
-// longer (NFR01). The default buckets jump from 5 s to 7.5 s.
+// durations gives the HTTP durations fine buckets where they matter for
+// NFR01: around 300 ms, the acquirer's latency of the load test, so the time
+// the service adds shows; and around the 5 s timeout, so a call cut at the
+// timeout can be told from one that took longer. The default buckets jump from
+// 250 to 500 ms, and from 5 to 7.5 s.
 var durations = func() []sdkmetric.View {
-	bounds := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 5.025, 5.05, 5.1, 5.25, 5.5, 7.5, 10}
+	bounds := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.25, 0.3, 0.31, 0.325, 0.35, 0.4, 0.5, 0.75, 1, 2.5,
+		5, 5.025, 5.05, 5.1, 5.25, 5.5, 7.5, 10}
 	var views []sdkmetric.View
 	for _, name := range []string{"http.server.request.duration", "http.client.request.duration"} {
 		views = append(views, sdkmetric.NewView(sdkmetric.Instrument{Name: name},
