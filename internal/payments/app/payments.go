@@ -50,8 +50,10 @@ type Payments interface {
 	// Payment returns the merchant's payment with id, or ErrNotFound, also
 	// when the payment belongs to another merchant.
 	Payment(ctx context.Context, merchantID, id string) (domain.Payment, error)
-	// History returns a payment's history, oldest first.
-	History(ctx context.Context, paymentID string) ([]domain.HistoryEntry, error)
+	// PaymentWithHistory returns the merchant's payment with id and its
+	// history, oldest first, read at one point in time, so the two agree; or
+	// ErrNotFound, as Payment does.
+	PaymentWithHistory(ctx context.Context, merchantID, id string) (domain.Payment, []domain.HistoryEntry, error)
 	// ListPayments returns up to f.Limit payments that match f, newest first.
 	ListPayments(ctx context.Context, f ListFilter) ([]domain.Payment, error)
 
@@ -258,15 +260,7 @@ func (s *Service) Payment(ctx context.Context, merchantID, id string) (domain.Pa
 	if !domain.IsPaymentID(id) {
 		return domain.Payment{}, nil, ErrNotFound
 	}
-	p, err := s.d.Payments.Payment(ctx, merchantID, id)
-	if err != nil {
-		return domain.Payment{}, nil, err
-	}
-	history, err := s.d.Payments.History(ctx, p.ID)
-	if err != nil {
-		return domain.Payment{}, nil, err
-	}
-	return p, history, nil
+	return s.d.Payments.PaymentWithHistory(ctx, merchantID, id)
 }
 
 // List returns a page of the merchant's payments, newest first. Without a

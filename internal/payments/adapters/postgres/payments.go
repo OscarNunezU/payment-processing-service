@@ -200,17 +200,49 @@ func violates(err error, constraint string) bool {
 }
 
 func (s *Store) PaymentByKey(ctx context.Context, merchantID, key string) (domain.Payment, error) {
-	return s.onePayment(ctx, `SELECT `+paymentColumns+` FROM payments WHERE merchant_id = $1 AND idempotency_key = $2`, merchantID, key)
+	return onePayment(ctx, s.db, `SELECT `+paymentColumns+` FROM payments WHERE merchant_id = $1 AND idempotency_key = $2`, merchantID, key)
 }
 
-// Payment filters by merchant as well as by id: another merchant's payment is
-// not found, as if it did not exist (FR04).
+// byID filters by merchant as well as by id: another merchant's payment is not
+// found, as if it did not exist (FR04).
+const byID = `SELECT ` + paymentColumns + ` FROM payments WHERE merchant_id = $1 AND id = $2`
+
+// Payment returns the merchant's payment with id.
 func (s *Store) Payment(ctx context.Context, merchantID, id string) (domain.Payment, error) {
-	return s.onePayment(ctx, `SELECT `+paymentColumns+` FROM payments WHERE merchant_id = $1 AND id = $2`, merchantID, id)
+	return onePayment(ctx, s.db, byID, merchantID, id)
 }
 
-func (s *Store) onePayment(ctx context.Context, query string, args ...any) (domain.Payment, error) {
-	p, err := scanPayment(s.db.QueryRow(ctx, query, args...))
+// PaymentWithHistory reads the payment and its history in one repeatable read
+// transaction, so both queries see the same committed state: a step that the
+// recovery commits between them cannot show in the history and not in the
+// payment.
+func (s *Store) PaymentWithHistory(ctx context.Context, merchantID, id string) (domain.Payment, []domain.HistoryEntry, error) {
+	var (
+		p       domain.Payment
+		entries []domain.HistoryEntry
+	)
+	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		if p, err = onePayment(ctx, tx, byID, merchantID, id); err != nil {
+			return err
+		}
+		entries, err = history(ctx, tx, id)
+		return err
+	})
+	if err != nil {
+		return domain.Payment{}, nil, err
+	}
+	return p, entries, nil
+}
+
+// querier is what the reads need, from the pool or from a transaction.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func onePayment(ctx context.Context, q querier, query string, args ...any) (domain.Payment, error) {
+	p, err := scanPayment(q.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, app.ErrNotFound
 	}
@@ -220,8 +252,13 @@ func (s *Store) onePayment(ctx context.Context, query string, args ...any) (doma
 	return p, nil
 }
 
+// History returns a payment's history, oldest first.
 func (s *Store) History(ctx context.Context, paymentID string) ([]domain.HistoryEntry, error) {
-	rows, err := s.db.Query(ctx, `
+	return history(ctx, s.db, paymentID)
+}
+
+func history(ctx context.Context, q querier, paymentID string) ([]domain.HistoryEntry, error) {
+	rows, err := q.Query(ctx, `
 		SELECT kind, coalesce(status, ''), coalesce(attempt, 0), coalesce(outcome, ''), coalesce(latency_ms, 0),
 		       coalesce(response_code, ''), coalesce(reason, ''), created_at
 		FROM payment_history WHERE payment_id = $1 ORDER BY id`,

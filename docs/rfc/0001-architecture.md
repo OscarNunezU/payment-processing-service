@@ -323,6 +323,7 @@ The simulator keeps its book and its tokens in memory. Restarting it is like mov
   - `503` with `Retry-After` when the acquirer is unavailable, the instance is at its limit, or Postgres does not answer. Nothing is created, and a retry with the same key is safe.
 - **Pagination:** `limit` (50 by default, 100 at most) and `starting_after`, the id of the last payment of the previous page, with `has_more` in the answer. Payments are listed newest first, by id: the ids are UUIDv7, so they sort by time, and an index serves any page as fast as the first.
 - **Isolation:** every query is filtered by the merchant of the key, so another merchant's payment answers `404`, as if it did not exist.
+- **One point in time:** `GET /v1/payments/{id}` reads the payment and its history in one repeatable read transaction, so a step committed between the two reads cannot show in one and not in the other.
 - **Specification:** OpenAPI 3.1 in `api/`.
 
 Example:
