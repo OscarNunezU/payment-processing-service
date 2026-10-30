@@ -1,6 +1,6 @@
 # RFC 0001: Architecture
 
-**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), the recovery, the webhooks and the web app as built in steps 6 to 8, and the observability of step 9 ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)) · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
+**Status:** draft for review · **Date:** 2026-10-28 · **Updated:** 2026-10-29, authorization moved into the request ([ADR 0005](../decisions/0005-authorize-in-the-request-recover-in-the-background.md)), the recovery, the webhooks and the web app as built in steps 6 to 8, the observability of step 9 ([ADR 0006](../decisions/0006-observability-with-opentelemetry-prometheus-tempo-and-grafana.md)), and what its proof changed: refusals after a reused connection, and the recovery's breaker · **Owner:** Oscar Núñez · **Requirements:** [PRD](../prd.md)
 
 ## 1. Summary
 

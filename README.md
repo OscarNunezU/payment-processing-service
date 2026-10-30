@@ -2,7 +2,7 @@
 
 A payment processing service for online merchants. It authorizes card payments with an acquirer inside the merchant's request and answers with the result. When the acquirer gives no clear answer, it finishes the payment in the background, and tells the merchant by webhook through Kafka. It is designed so that no failure can charge a customer twice or lose an accepted payment.
 
-> **Status:** in progress. So far: the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, the recovery, which finishes or reverses the payments whose answer was not clear, the signed webhooks with their retries, and the web app that plays the merchant: a checkout and a panel.
+> **Status:** the first iteration is complete. It has the design, the foundation (local environment, CI and shared platform packages), the acquirer simulator, merchant authentication, payments with their queries, their authorization in the request, the events relayed to Kafka, the recovery, which finishes or reverses the payments whose answer was not clear, the signed webhooks with their retries, the web app that plays the merchant (a checkout and a panel), the metrics, traces and alerts, and the [proof](#proof) under load and faults.
 
 ## Documents
 
@@ -122,7 +122,108 @@ make test-integration  # every test, with Postgres in a container
 make web               # the web app's tests and build, with its type check
 cd web && npm run e2e  # the browser tests, against `docker compose up` (PW_CHANNEL=chrome uses your Chrome)
 make ci                # formatting, linters, every test, govulncheck and the web app, as in CI
+make proof             # the load test with faults, then the consistency checker, against `docker compose up` (about 20 minutes)
 ```
+
+## Proof
+
+`make proof` runs [tests/load/run.sh](tests/load/run.sh) against the local environment in three phases: a nominal load, a load with faults, and the consistency checker. The output of the run reported here, and the dashboard during it, are in [docs/proof](docs/proof/).
+
+**The machine:** a Mac mini M4, with 10 CPUs and 7.7 GB for Docker Desktop. The whole stack runs on it, k6 included, and every trace is kept. These numbers show what the design does on one machine. They are not a capacity plan for production.
+
+### Nominal load
+
+The simulator answers every authorization in 300 ms. k6 tokenizes a card at the simulator and pays with it through the API, at a constant rate for a minute. It starts each payment on time, whether the earlier ones have answered or not.
+
+| Rate | Payments | p50 | p95 | p99 | Max |
+|---|---|---|---|---|---|
+| 100/s | 6,001 | 302.3 ms | 303.6 ms | 310.4 ms | 382.8 ms |
+| 200/s | 12,000 | 301.8 ms | 302.8 ms | 304.2 ms | 334.2 ms |
+| 300/s | 18,000 | 301.7 ms | 302.8 ms | 304.7 ms | 334.6 ms |
+| 500/s | 30,001 | 302.0 ms | 303.6 ms | 311.1 ms | 358.6 ms |
+
+Every payment was answered `201 APPROVED`, and k6 dropped none. At 500 per second, the service adds 11 ms in p99 to the acquirer's 300 ms, and NFR01 allows 50. That meets NFR02, 500 per second on one machine, with a margin that is not wide: in the run before this one, the p99 at 500 per second was 356.9 ms ([previous-run](docs/proof/previous-run/)). For about 20 s, requests waited for the API's database connections, while the acquirer's calls stayed at 310 ms.
+
+![The Payments dashboard during the nominal load, from 100 to 500 payments per second](docs/proof/nominal.png)
+
+### Faults
+
+k6 pays 50 times per second for 5 minutes, with a mix of the test cards: most approve, and the rest decline, fail once, answer late, never answer or are rejected. Meanwhile, the script breaks things:
+
+| At | What breaks | What the service does |
+|---|---|---|
+| 0:30 | The acquirer answers `503` to a third of its calls | Those payments answer `202`, and the recovery repeats their calls |
+| 1:10 | It answers a fifth of its calls after the 5 s timeout | The request answers `202` at 5 s, and the next attempt gets the answer the acquirer stored for the key |
+| 1:50 | It goes down for 30 s, tokenization too | No new card can be tokenized. The calls in flight are refused, both breakers open, and the recovery holds its attempts until the acquirer is back |
+| 2:35 | Kafka stops for 45 s | Payments are still authorized and answered. Their events wait in the outbox, up to about 2,300, and drain when Kafka is back |
+| 3:40 | `payments-api` is killed, and restarted | The requests in flight are cut. Their payments stay `PROCESSING`, and the recovery finishes them |
+| 4:00 | `payments-worker` is killed, and restarted | Its leases expire, and the new worker claims those payments again |
+
+What happened to the 15,001 payments k6 started:
+
+- 1,502 never reached the API: their cards could not be tokenized while the acquirer was down.
+- 32 found the API down while it restarted.
+- The API answered the other 13,467. In its metrics, which lose the last seconds before the kill, there are about 9,479 `201`, 2,107 `202` and 1,788 `503`. The `503` came from the breaker, which opened during the `503` errors and while the acquirer was down.
+- It created 11,753 payments. 9,367 were approved, 1,478 of them by the recovery, on their second or third attempt. 1,173 were declined, and 587 rejected by the acquirer. 626 ended `FAILED`, `acquirer_unavailable`, each after 3 attempts and a confirmed reversal: most are the card that never answers.
+
+A payment's p50 was 53 ms; the acquirer answered in 50 ms in this phase. The p95 and the p99 were 5 s, the timeout of the calls that never got an answer. NFR01 allows the timeout plus 50 ms, 5.05 s. In the API's histogram, 13,374 of 13,375 requests took at most that, and one went past it by less than 50 ms.
+
+![The Payments dashboard during the faults: the breaker, the recovery, the outbox filling while Kafka is down, and every payment finished at the end](docs/proof/faults.png)
+
+### Consistency
+
+Once the load ends, [the checker](tests/consistency/) waits until nothing moves: no payment `PROCESSING`, no event in the outbox, no webhook pending. Then it reads the payments database, the simulator's book and the deliveries of the webhooks service, and checks every invariant of the PRD over every payment of the run, nominal and with faults:
+
+```
+79256 payments (76870 APPROVED, 1173 DECLINED, 1213 FAILED), 78669 keys in the acquirer's book, 79256 webhook events. Settled after 27s.
+
+Invariant  Rule                                      Checked  Violations
+INV01      one key, one payment                      79256    0
+INV02      one live or approved payment per order    79256    0
+INV03      money is held only for approved payments  156126   0
+INV04      every payment reaches a final state       79256    0
+INV05      webhooks match the database and the book  79256    0
+INV06      every final state is delivered once       79256    0
+
+All invariants hold.
+```
+
+### What the proof found
+
+**Money held for a failed payment.** The first full run did not pass. 42 of its 15,014 payments had ended `FAILED`, `acquirer_unavailable`, while the acquirer held a live authorization for them: money held on a customer's card for a payment the merchant was told had failed (INV03).
+
+The cause was in Go's HTTP transport. When a kept-alive connection fails, the transport sends a request that carries an `Idempotency-Key` again, on a new connection, and returns the error of that second try. A call whose connection broke just as the simulator went down came back as "connection refused". The client read that as "certainly not sent", so the recovery did not reverse the payment. But the first try had arrived, and had been approved.
+
+Now a refusal counts as not sent only when the request never had a connection. Otherwise it is uncertain, and the payment goes through the usual retries and the reversal. A test reproduces the sequence: it failed before the fix, and passes with it ([RFC, section 5.3](docs/rfc/0001-architecture.md#53-retries-uncertainty-and-reversal)). No unit, integration, acceptance or browser test had found it: it takes a connection reused at the moment the acquirer goes down, which only a load with faults produces.
+
+**A recovery stopped by its own breaker.** The run before this one passed the checker, but the dashboard showed the recovery's breaker open for most of the faults, and opening before any fault, from the mix of cards alone. The recovery only calls for payments whose last attempt had no definite answer, so its calls fail in a row far more often than the API's. The card that never answers, 1 in 20 payments, was enough to keep its breaker open. After each cool-down, its probe was likely to be another such payment, which opened it again. Meanwhile the attempts of every other payment waited until their 2-minute window ended, and were reversed. Customers were not charged, but sales that a second attempt would have approved were lost.
+
+The recovery's breaker now opens on refused connections only: a timeout on a retry is often about the payment, and a refused connection is about the acquirer ([RFC, section 5.4](docs/rfc/0001-architecture.md#54-circuit-breaker-and-load-shedding)). The same faults, before and after:
+
+| Payments created during the faults | Before | After |
+|---|---|---|
+| Created | 11,723 | 11,753 |
+| Approved | 8,052 | 9,367 |
+| `FAILED`, `acquirer_unavailable` | 1,981 | 626 |
+| Of those, with a single attempt | 1,896 | 0 |
+
+### What the load found, and what changed
+
+The first measurements were far from these numbers: from 50 per second on, the p99 of a payment was between 1 and 4 s. The traces, the pool metrics and the CPU of each container pointed to four causes, all fixed in this step:
+
+1. **The relay ran in a tight loop.** Whenever it found rows, it read the outbox again at once, so under load it sent one query and one request to Kafka per event. It now waits after a round that does not fill its batch, and the events of the next moment travel together.
+2. **The HTTP clients opened a connection for most calls.** Go's default transport keeps 2 idle connections per host. The acquirer's client now keeps up to 512, the API's limit of payments in flight, and the webhook sender 100.
+3. **The API ran out of database connections.** Each payment holds one for T1 and another for T2, and requests waited for the pool of 20. It is now 50, and every service reports its pool: the connections in use and idle, and the waits.
+4. **T1 and T2 made too many round trips to Postgres**: 4 and 6. T1 is now a single statement, and T2 a single pgx batch. In an A/B test on the same environment, at 100 per second, the p50 went from 1.98 s to 0.86 s.
+
+Two errors were in the measuring itself. `docker compose run k6` recreated the services k6 depends on, which reset the simulator's latency and measured cold services; k6 now runs with `--no-deps`. And the histograms had buckets too coarse around 300 ms and 5 s, which moved the percentiles in Grafana; they are finer now. The percentiles in the tables above come from k6, which computes them from every request, not from buckets.
+
+### What this proof does not show
+
+- **Production.** One machine runs the service, its databases, Kafka, the simulator, the observability stack and k6. Each rate runs for a minute.
+- **Stable numbers.** Runs on Docker Desktop vary. Besides the 500 per second above, one run on a fresh environment, before the two fixes above, had a p99 of 1.8 s at 100 per second, and the cause was not found. Another counted 60 failed requests at 200 per second (0.24 %) that the API never recorded; repeated, it had none. Every run reported here starts from `docker compose down --volumes`.
+- **A real acquirer.** The simulator answers every call in exactly 300 ms; a real acquirer has a long tail.
+- **The API's breaker at volume.** It opens after 5 failures in a row, so with a third of the calls failing, at 50 per second, it opened by chance and refused payments that the acquirer would have approved two times in three. A breaker on the failure rate over a window would not; it is in the [roadmap](docs/roadmap.md).
 
 ## Plan
 
@@ -137,7 +238,7 @@ make ci                # formatting, linters, every test, govulncheck and the we
 | 6. Recovery | Done |
 | 7. Webhooks | Done |
 | 8. Checkout and panel | Done |
-| 9. Proof | In progress: observability done; k6 and the consistency checker next |
+| 9. Proof | Done |
 
 What each step delivers is in the [RFC](docs/rfc/0001-architecture.md#17-plan).
 
@@ -149,4 +250,4 @@ Every capability in this repository is marked as one of:
 - **Implemented:** built and covered by automated tests.
 - **Proven:** demonstrated under load or failure, with the results in this repository.
 
-Today, the foundation, the acquirer simulator, merchant authentication, payments, their authorization in the request, the relay, the recovery, the webhooks, the web app, and the metrics, traces and alerts are implemented; the proof under load is designed. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers. And it walks the web app in a browser: a payment made and followed, a card number that never reaches the merchant, the webhooks with their retries, and the acquirer down.
+Today, payments with their idempotency and their orders, their authorization in the request, the breaker, the recovery, the relay and the webhooks are proven, by the load with faults and the consistency checker of the [proof](#proof). The foundation, the acquirer simulator, merchant authentication, the web app, and the metrics, traces and alerts are implemented. So is the limit of 512 payments in flight, which no run reached. CI also runs the failures of the recovery against the local environment: the API killed during its call, Kafka down, and an acquirer that never answers. And it walks the web app in a browser: a payment made and followed, a card number that never reaches the merchant, the webhooks with their retries, and the acquirer down.
