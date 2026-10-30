@@ -124,10 +124,11 @@ Each answer from the acquirer falls into one class:
 ### 5.4 Circuit breaker and load shedding
 
 - **Circuit breaker.** Each instance of `payments-api` and `payments-worker` has one.
-  - After 5 consecutive answers that are uncertain or not sent, from any payments, it opens for 30 s.
+  - In `payments-api`, it opens for 30 s after 5 answers in a row that are uncertain or not sent, from any payments.
+  - In `payments-worker`, it opens for 30 s after 5 refused connections in a row. The recovery only calls for payments whose last attempt had no definite answer, so its timeouts and errors are often about the payment, not the acquirer. Under load, a card the acquirer never answers kept a breaker that counted them open, and held the attempts of every other payment until their authorization windows ended (README, "Proof"). A refused connection is about the acquirer. The cost: when the acquirer accepts connections but answers nothing, the recovery spends its attempts and reverses, instead of holding them.
   - While it is open, `payments-api` answers new payments with `503` and `Retry-After` without creating them, and the recovery holds its attempts: a held payment keeps the lease of its claim, and is claimed again when it ends. The authorization window keeps running.
   - Until it opens, an outage is discovered by the calls themselves: the few payments created before the breaker opens answer `202`, and the recovery finishes them. No call can tell that the acquirer is down before trying.
-  - After the cool-down, a single call probes the acquirer: a definite answer closes the breaker, and a failure opens it again. Any definite answer resets the count.
+  - After the cool-down, a single call probes the acquirer: an answer that is not a failure closes the breaker, and a failure opens it again. Any such answer resets the count.
   - Reversals neither wait for the breaker nor count for it: they are what keeps a failed payment from being charged, and they are few, with their own waits.
 - **Load shedding.** Each instance of `payments-api` has at most 512 payments in flight at the acquirer. Beyond that, it answers new payments with `503` and `Retry-After`, so a slow acquirer cannot pile up requests without limit. Like the breaker, the limit is checked inside T1, after the key, so retries of existing payments are always answered.
 
@@ -154,7 +155,7 @@ Every minute, it also logs an alert for any payment in `PROCESSING` for more tha
 | Wait before a new attempt | 1–2 s, then 2–4 s |
 | Authorization window | 2 minutes from creation |
 | Reversal retries | from 5 s, doubling up to 1 minute |
-| Circuit breaker | opens after 5 failures, for 30 s |
+| Circuit breaker | opens after 5 failures in a row, for 30 s; the recovery's counts refused connections only |
 | Payments in flight per API instance | 512 |
 | Alert for an unresolved payment | 5 minutes, checked every minute |
 | Webhook POST timeout, and the lease of a claimed delivery | 5 s and 30 s |
