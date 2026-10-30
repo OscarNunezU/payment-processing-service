@@ -27,7 +27,7 @@ services:
       retries: 20
 
   kafka:
-    image: apache/kafka:4.1.1
+    image: apache/kafka:4.3.1
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -61,7 +61,7 @@ services:
   # The topics, with their partitions and retention (RFC 0001, section 8.1).
   # Creating them again changes nothing.
   kafka-topics:
-    image: apache/kafka:4.1.1
+    image: apache/kafka:4.3.1
     restart: "no"
     entrypoint: ["/bin/bash", "-c"]
     command:
