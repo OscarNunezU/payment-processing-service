@@ -172,7 +172,7 @@ A payment's p50 was 53 ms; the acquirer answered in 50 ms in this phase. The p95
 
 ### Consistency
 
-Once the load ends, [the checker](tests/consistency/) waits until nothing moves: no payment `PROCESSING`, no event in the outbox, no webhook pending. Then it reads the payments database, the simulator's book and the deliveries of the webhooks service, and checks every invariant of the PRD over every payment of the run, nominal and with faults:
+Once the load ends, [the checker](tests/consistency/) waits until nothing moves: no payment `PROCESSING`, no event in the outbox or in Kafka, and no webhook pending. Then it reads the payments database, the simulator's book and the deliveries of the webhooks service, and checks every invariant of the PRD over every payment of the run, nominal and with faults:
 
 ```
 79256 payments (76870 APPROVED, 1173 DECLINED, 1213 FAILED), 78669 keys in the acquirer's book, 79256 webhook events. Settled after 27s.

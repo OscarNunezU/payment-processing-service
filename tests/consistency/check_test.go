@@ -110,9 +110,10 @@ func TestTheSystemIsQuietOnlyWhenNothingIsInFlight(t *testing.T) {
 		t.Fatal("a settled run is not quiet")
 	}
 	for name, change := range map[string]func(*Snapshot){
-		"a payment PROCESSING": func(s *Snapshot) { s.Payments[0].Status = "PROCESSING" },
-		"a webhook pending":    func(s *Snapshot) { s.Deliveries[0].Status = "pending" },
-		"events in the outbox": func(s *Snapshot) { s.OutboxPending = 1 },
+		"a payment PROCESSING":    func(s *Snapshot) { s.Payments[0].Status = "PROCESSING" },
+		"a webhook pending":       func(s *Snapshot) { s.Deliveries[0].Status = "pending" },
+		"events in the outbox":    func(s *Snapshot) { s.OutboxPending = 1 },
+		"an event still in Kafka": func(s *Snapshot) { s.Deliveries = s.Deliveries[1:] },
 	} {
 		s := settled()
 		change(&s)

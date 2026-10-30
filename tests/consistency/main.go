@@ -4,8 +4,8 @@
 // service delivered (PRD, section 13).
 //
 // It first waits for the system to settle: no payment PROCESSING, no event in
-// the outbox, and no webhook pending. Then it checks, prints a report, and
-// exits with 1 if any invariant was broken.
+// the outbox or in Kafka, and no webhook pending. Then it checks, prints a
+// report, and exits with 1 if any invariant was broken.
 //
 //	go run ./tests/consistency
 //
@@ -92,16 +92,21 @@ func (s *sources) settled(ctx context.Context, within time.Duration) (Snapshot, 
 	}
 }
 
-// quiet reports whether nothing is left to finish: the recovery, the relay
-// and the dispatcher are all done.
+// quiet reports whether nothing is left to finish: the recovery, the relay,
+// the webhooks consumer and the dispatcher are all done. An event the relay
+// published that the consumer has not stored yet, still in Kafka, shows as a
+// final payment without a delivery. One that never arrives is waited for until
+// the time runs out, and INV06 reports it.
 func quiet(s Snapshot) bool {
-	for _, p := range s.Payments {
-		if p.Status == "PROCESSING" {
-			return false
-		}
-	}
+	delivered := make(map[string]bool, len(s.Deliveries))
 	for _, d := range s.Deliveries {
 		if d.Status == "pending" {
+			return false
+		}
+		delivered[d.PaymentID] = true
+	}
+	for _, p := range s.Payments {
+		if p.Status == "PROCESSING" || !delivered[p.ID] {
 			return false
 		}
 	}
