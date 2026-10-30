@@ -79,7 +79,7 @@ services:
   # Observability (ADR 0006): the services push traces to Tempo and metrics
   # to Prometheus over OTLP, and Grafana shows both.
   tempo:
-    image: grafana/tempo:2.10.8
+    image: grafana/tempo:2.10.10
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./deploy/local/tempo.yaml:/etc/tempo.yaml:ro
