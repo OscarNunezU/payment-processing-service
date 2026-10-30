@@ -136,6 +136,7 @@ func run(ctx context.Context, env *config.Env) error {
 		acquirer.ObserveBreaker(breaker),
 		postgres.ObserveRecovery(store, time.Now),
 		outbox.ObservePending(db),
+		platformpg.ObservePool(db),
 	); err != nil {
 		return fmt.Errorf("observe the worker: %w", err)
 	}

@@ -50,7 +50,9 @@ func loadSettings(env *config.Env) (settings, error) {
 	s := settings{
 		httpAddr:    env.String("HTTP_ADDR", ":8080"),
 		databaseURL: env.Required("DATABASE_URL"),
-		maxConns:    env.Int("DATABASE_MAX_CONNS", 20, 500),
+		// Each payment holds a connection for T1 and for T2; under load, 20
+		// were not enough and requests waited for one (step 9, the README).
+		maxConns:    env.Int("DATABASE_MAX_CONNS", 50, 500),
 		acquirerURL: env.Required("ACQUIRER_URL"),
 		acquirerKey: env.Required("ACQUIRER_SECRET_KEY"),
 		// The time budget and the load shedding of RFC 0001, sections 5.4 and
@@ -106,8 +108,8 @@ func run() error {
 	defer db.Close()
 
 	breaker := acquirer.NewBreaker(5, 30*time.Second, time.Now)
-	if err := acquirer.ObserveBreaker(breaker); err != nil {
-		return fmt.Errorf("observe the circuit breaker: %w", err)
+	if err := errors.Join(acquirer.ObserveBreaker(breaker), platformpg.ObservePool(db)); err != nil {
+		return fmt.Errorf("observe the circuit breaker and the pool: %w", err)
 	}
 	store := postgres.New(db)
 	svc := app.NewService(app.Deps{

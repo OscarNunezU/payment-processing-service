@@ -120,8 +120,8 @@ func run(ctx context.Context, env *config.Env) error {
 	defer kafkaClient.Close()
 
 	store := postgres.New(db)
-	if err := postgres.ObserveDeliveries(store); err != nil {
-		return fmt.Errorf("observe the deliveries: %w", err)
+	if err := errors.Join(postgres.ObserveDeliveries(store), platformpg.ObservePool(db)); err != nil {
+		return fmt.Errorf("observe the deliveries and the pool: %w", err)
 	}
 	svc := app.NewService(app.Deps{
 		Store:  store,
