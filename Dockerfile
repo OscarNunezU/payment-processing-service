@@ -1,5 +1,5 @@
 # One image with every command. Each Compose service runs the binary it needs.
-FROM golang:1.27.3-alpine AS build
+FROM golang:1.27.4-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
